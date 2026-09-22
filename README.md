@@ -1,4 +1,4 @@
-# 循迹小车 —— 2026 DEBUG 实验室软件组考核
+# 循迹小车 —— 2026 DEBUG 实验室软件组考核(大部分代码是ai写的)
 
 STM32F103C8T6 循迹小车（CubeMX + Keil MDK-ARM + HAL 库）。
 
