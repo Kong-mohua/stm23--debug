@@ -1,0 +1,45 @@
+# ============================================================
+#  Keil MDK-ARM 编译产物（不要提交）
+# ============================================================
+MDK-ARM/diangdeng/
+MDK-ARM/*.uvguix.*
+MDK-ARM/*.uvoptx
+
+*.o
+*.d
+*.crf
+*.axf
+*.hex
+*.bin
+*.elf
+*.map
+*.lst
+*.lnp
+*.iex
+*.dep
+*.build_log.htm
+
+# 构建日志
+build_log.txt
+
+# ============================================================
+#  编辑器 / 系统杂项
+# ============================================================
+Thumbs.db
+Desktop.ini
+.vscode/
+*.bak
+*~
+
+# ============================================================
+#  剔除工程用不到的 CMSIS 库（省下约 35 MB，主要是预编译的数学库）
+#  这些目录没有被工程的 include 路径引用，删掉不影响编译。
+#  如果以后你在 Keil 的 RTE 里启用了 CMSIS-DSP，再把对应行注释掉。
+# ============================================================
+Drivers/CMSIS/Lib/
+Drivers/CMSIS/DSP/
+Drivers/CMSIS/NN/
+Drivers/CMSIS/Core_A/
+Drivers/CMSIS/RTOS/
+Drivers/CMSIS/RTOS2/
+Drivers/CMSIS/docs/
