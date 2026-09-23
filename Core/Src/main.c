@@ -2,7 +2,7 @@
 /**
   ******************************************************************************
   * @file           : main.c
-  * @brief          : Main program body
+  * @brief          : Main program body -- menu, LEDs and serial interface
   ******************************************************************************
   * @attention
   *
@@ -22,6 +22,7 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "oled.h"
+#include "app.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -42,6 +43,8 @@
 /* Private variables ---------------------------------------------------------*/
 I2C_HandleTypeDef hi2c1;
 
+UART_HandleTypeDef huart1;
+
 /* USER CODE BEGIN PV */
 
 /* USER CODE END PV */
@@ -50,6 +53,7 @@ I2C_HandleTypeDef hi2c1;
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_I2C1_Init(void);
+static void MX_USART1_UART_Init(void);
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
@@ -67,9 +71,9 @@ static const uint16_t      key_pin [KEY_NUM] = {KEY1_Pin, KEY2_Pin, KEY3_Pin, KE
    A bit is set only at the moment the key is confirmed pressed. */
 uint8_t key_scan(void)
 {
-    static uint8_t  last_raw[KEY_NUM] = {1,1,1,1};  /* last raw level read       */
-    static uint8_t  stable  [KEY_NUM] = {1,1,1,1};  /* debounced confirmed level */
-    static uint32_t t_change[KEY_NUM] = {0,0,0,0};  /* time of last raw change   */
+    static uint8_t  last_raw[KEY_NUM] = {1,1,1,1};
+    static uint8_t  stable  [KEY_NUM] = {1,1,1,1};
+    static uint32_t t_change[KEY_NUM] = {0,0,0,0};
     uint8_t events = 0;
     uint32_t now = HAL_GetTick();
 
@@ -77,43 +81,17 @@ uint8_t key_scan(void)
     {
         uint8_t raw = (HAL_GPIO_ReadPin(key_port[i], key_pin[i]) == GPIO_PIN_RESET) ? 0 : 1;
 
-        if (raw != last_raw[i]) {                 /* raw changed -> restart timer */
+        if (raw != last_raw[i]) {
             last_raw[i] = raw;
             t_change[i] = now;
         }
         else if ((now - t_change[i]) >= DEBOUNCE_MS && raw != stable[i]) {
-            stable[i] = raw;                      /* stable long enough -> confirm */
-            if (stable[i] == 0)                   /* confirmed press */
+            stable[i] = raw;
+            if (stable[i] == 0)
                 events |= (1u << i);
         }
     }
     return events;
-}
-
-/* ---------------- main menu ---------------- */
-
-#define MENU_CNT 4
-
-/* Item text is UTF-8 written as hex escapes so this source file stays pure
-   ASCII: Keil on a Chinese locale turns real Chinese characters into '?'.
-   Items:  LED 控制 / 信息显示 / 巡线功能 / 拓展功能 */
-static const char *menu_item[MENU_CNT] = {
-    "LED \xE6\x8E\xA7\xE5\x88\xB6",
-    "\xE4\xBF\xA1\xE6\x81\xAF\xE6\x98\xBE\xE7\xA4\xBA",
-    "\xE5\xB7\xA1\xE7\xBA\xBF\xE5\x8A\x9F\xE8\x83\xBD",
-    "\xE6\x8B\x93\xE5\xB1\x95\xE5\x8A\x9F\xE8\x83\xBD"
-};
-
-/* redraw the whole menu, index = highlighted row (0~3) */
-static void menu_draw(uint8_t index)
-{
-    OLED_Clear();
-    for (uint8_t i = 0; i < MENU_CNT; i++) {
-        if (i == index)
-            OLED_ShowStr(i, 0, ">");        /* arrow on the selected row */
-        OLED_ShowMix(i, 14, menu_item[i]);  /* each row is 16 px tall    */
-    }
-    OLED_Refresh();
 }
 /* USER CODE END 0 */
 
@@ -125,7 +103,7 @@ int main(void)
 {
 
   /* USER CODE BEGIN 1 */
-  uint8_t menu_index = 0;   /* current menu row: 0~3 */
+  /* Application state is maintained in app.c. */
   /* USER CODE END 1 */
 
   /* MCU Configuration--------------------------------------------------------*/
@@ -147,11 +125,9 @@ int main(void)
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
   MX_I2C1_Init();
+  MX_USART1_UART_Init();
   /* USER CODE BEGIN 2 */
-  HAL_GPIO_WritePin(LED1_GPIO_Port, LED1_Pin, GPIO_PIN_SET);   /* both LEDs off */
-  HAL_GPIO_WritePin(LED2_GPIO_Port, LED2_Pin, GPIO_PIN_SET);
-  OLED_Init();
-  menu_draw(menu_index);
+  App_Init();
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -161,35 +137,10 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-    uint8_t keys = key_scan();       /* scan all keys once per loop */
-    uint8_t old_index = menu_index;
-
-    if (keys & 0x01) {               /* KEY1: previous row */
-        menu_index = (menu_index == 0) ? 3 : menu_index - 1;
-    }
-    if (keys & 0x02) {               /* KEY2: next row */
-        menu_index = (menu_index + 1) % 4;
-    }
-    if (keys & 0x04) {               /* KEY3: enter submenu (next step) */
-        /* TODO: enter the submenu of menu_index */
-    }
-    if (keys & 0x08) {               /* KEY4: back to main menu */
-        menu_index = 0;
-    }
-
-    if (menu_index != old_index)     /* redraw only when the selection moved */
-        menu_draw(menu_index);
-
-    /* Show current row on the two LEDs as binary: LED2=high bit, LED1=low bit */
-    HAL_GPIO_WritePin(LED1_GPIO_Port, LED1_Pin, (menu_index & 1) ? GPIO_PIN_RESET : GPIO_PIN_SET);
-    HAL_GPIO_WritePin(LED2_GPIO_Port, LED2_Pin, (menu_index & 2) ? GPIO_PIN_RESET : GPIO_PIN_SET);
+    App_Tick();
   }
   /* USER CODE END 3 */
 }
-
-/* USER CODE BEGIN 4 */
-
-/* USER CODE END 4 */
 
 /**
   * @brief System Clock Configuration
@@ -262,6 +213,36 @@ static void MX_I2C1_Init(void)
 }
 
 /**
+  * @brief USART1 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_USART1_UART_Init(void)
+{
+
+  /* USER CODE BEGIN USART1_Init 0 */
+  /* USER CODE END USART1_Init 0 */
+
+  /* USER CODE BEGIN USART1_Init 1 */
+  /* USER CODE END USART1_Init 1 */
+  huart1.Instance = USART1;
+  huart1.Init.BaudRate = 9600;
+  huart1.Init.WordLength = UART_WORDLENGTH_8B;
+  huart1.Init.StopBits = UART_STOPBITS_1;
+  huart1.Init.Parity = UART_PARITY_NONE;
+  huart1.Init.Mode = UART_MODE_TX_RX;
+  huart1.Init.HwFlowCtl = UART_HWCONTROL_NONE;
+  huart1.Init.OverSampling = UART_OVERSAMPLING_16;
+  if (HAL_UART_Init(&huart1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN USART1_Init 2 */
+  /* USER CODE END USART1_Init 2 */
+
+}
+
+/**
   * @brief GPIO Initialization Function
   * @param None
   * @retval None
@@ -278,10 +259,10 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOA_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(LED1_GPIO_Port, LED1_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(LED1_GPIO_Port, LED1_Pin, GPIO_PIN_SET);
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(LED2_GPIO_Port, LED2_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(LED2_GPIO_Port, LED2_Pin, GPIO_PIN_SET);
 
   /*Configure GPIO pin : LED1_Pin */
   GPIO_InitStruct.Pin = LED1_Pin;
@@ -290,8 +271,8 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(LED1_GPIO_Port, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : KEY1_Pin KEY2_Pin KEY3_Pin KEY4_Pin */
-  GPIO_InitStruct.Pin = KEY1_Pin|KEY2_Pin|KEY3_Pin|KEY4_Pin;
+  /*Configure GPIO pins : KEY1_Pin KEY3_Pin KEY4_Pin KEY2_Pin */
+  GPIO_InitStruct.Pin = KEY1_Pin|KEY3_Pin|KEY4_Pin|KEY2_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
   GPIO_InitStruct.Pull = GPIO_PULLUP;
   HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);

@@ -1,0 +1,201 @@
+#include "app.h"
+#include "oled.h"
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+
+extern uint8_t key_scan(void);
+extern UART_HandleTypeDef huart1;
+#define uart huart1
+static uint8_t rx_byte;
+#define RX_SIZE 128u
+static volatile uint8_t rx_buf[RX_SIZE];
+static volatile uint16_t rx_head, rx_tail;
+static volatile uint8_t rx_lost;
+static char line[32];
+static uint8_t line_len, discard_line;
+static int32_t value_a;
+static uint8_t page, selected, led_mode, led1, led2, dirty;
+static uint32_t blink_tick, paint_tick, probe_tick;
+
+static void set_leds(uint8_t one, uint8_t two)
+{
+    led1 = one;
+    led2 = two;
+    HAL_GPIO_WritePin(LED1_GPIO_Port, LED1_Pin, one ? GPIO_PIN_RESET : GPIO_PIN_SET);
+    HAL_GPIO_WritePin(LED2_GPIO_Port, LED2_Pin, two ? GPIO_PIN_RESET : GPIO_PIN_SET);
+    dirty = 1;
+}
+
+/* Explicit signed 32-bit bounds, including INT32_MIN. */
+static uint8_t parse_number(const char *s, int32_t *result)
+{
+    uint8_t negative = 0;
+    uint32_t n = 0, limit;
+    if (*s == '-' || *s == '+') negative = (*s++ == '-');
+    if (!*s) return 0;
+    limit = negative ? 2147483648u : 2147483647u;
+    while (*s) {
+        uint32_t digit;
+        if (*s < '0' || *s > '9') return 0;
+        digit = (uint32_t)(*s++ - '0');
+        if (n > (limit - digit) / 10u) return 0;
+        n = n * 10u + digit;
+    }
+    *result = negative ? (n == 2147483648u ? INT32_MIN : -(int32_t)n) : (int32_t)n;
+    return 1;
+}
+
+static void reply(const char *s)
+{
+    HAL_UART_Transmit(&uart, (uint8_t *)s, (uint16_t)strlen(s), 30);
+}
+
+static void command(void)
+{
+    int32_t parsed;
+    char out[20];
+    line[line_len] = '\0';
+    if (strcmp(line, "GET A") == 0) {
+        snprintf(out, sizeof(out), "%ld\r\n", (long)value_a);
+        reply(out);
+    } else if (parse_number(line, &parsed)) {
+        value_a = parsed;
+        if (page == 2) dirty = 1;
+        reply("OK\r\n");
+    } else reply("ERR\r\n");
+}
+
+static void serial_poll(void)
+{
+    /* Bound work per iteration even if a host continuously floods commands. */
+    for (uint8_t budget = 0; budget < 32; ++budget) {
+        uint8_t c;
+        uint32_t mask = __get_PRIMASK();
+        __disable_irq();
+        if (rx_lost) {
+            rx_tail = rx_head;
+            rx_lost = 0;
+            line_len = 0;
+            discard_line = 1;
+        }
+        if (rx_tail == rx_head) {
+            __set_PRIMASK(mask);
+            break;
+        }
+        c = rx_buf[rx_tail];
+        rx_tail = (rx_tail + 1u) % RX_SIZE;
+        __set_PRIMASK(mask);
+        if (c == '\r' || c == '\n') {
+            if (discard_line) reply("ERR\r\n");
+            else if (line_len) command();
+            line_len = discard_line = 0;
+        } else if (!discard_line) {
+            if (c < 32 || c > 126 || line_len >= sizeof(line) - 1u)
+                discard_line = 1;
+            else line[line_len++] = (char)c;
+        }
+    }
+}
+
+void HAL_UART_RxCpltCallback(UART_HandleTypeDef *h)
+{
+    uint16_t next;
+    if (h != &uart) return;
+    next = (rx_head + 1u) % RX_SIZE;
+    if (next == rx_tail) rx_lost = 1;
+    else { rx_buf[rx_head] = rx_byte; rx_head = next; }
+    HAL_UART_Receive_IT(&uart, &rx_byte, 1);
+}
+
+void HAL_UART_ErrorCallback(UART_HandleTypeDef *h)
+{
+    if (h != &uart) return;
+    rx_lost = 1;
+    if (h->RxState == HAL_UART_STATE_READY)
+        HAL_UART_Receive_IT(&uart, &rx_byte, 1);
+}
+
+static void paint(void)
+{
+    static const char *const items[] = {
+        "LED 控制", "信息显示", "巡线功能", "拓展功能"
+    };
+    char text[20];
+    OLED_Clear();
+    if (page == 0) {
+        for (uint8_t i = 0; i < 4; ++i) {
+            OLED_ShowStr(i, 0, i == selected ? ">" : " ");
+            OLED_ShowMix(i, 8, items[i]);
+        }
+    } else if (page == 1) {
+        OLED_ShowMix(0, 0, "LED 控制");
+        snprintf(text, sizeof(text), "1:%s 2:%s", led1 ? "ON" : "OFF", led2 ? "ON" : "OFF");
+        OLED_ShowStr(1, 0, text);
+        OLED_ShowStr(2, 0, "K1:ON/OFF K2:ALT");
+        OLED_ShowStr(3, 0, "K4:BACK");
+    } else if (page == 2) {
+        OLED_ShowStr(0, 0, STUDENT_NAME);
+        OLED_ShowStr(1, 0, STUDENT_ID);
+        snprintf(text, sizeof(text), "a=%ld", (long)value_a);
+        OLED_ShowStr(2, 0, text);
+        OLED_ShowStr(3, 0, "K4:BACK");
+    } else {
+        OLED_ShowMix(0, 0, items[page - 1]);
+        OLED_ShowStr(1, 0, "NOT IMPLEMENTED");
+        OLED_ShowStr(2, 0, "NEEDS HARDWARE");
+        OLED_ShowStr(3, 0, "K4:BACK");
+    }
+    OLED_Refresh();
+}
+
+void App_Init(void)
+{
+    page = selected = led_mode = 0;
+    value_a = 0;
+    set_leds(0, 0);
+    HAL_Delay(100); /* power-on settling only; never used for LED flashing */
+    OLED_Init();
+    if (HAL_UART_Receive_IT(&uart, &rx_byte, 1) != HAL_OK) Error_Handler();
+    probe_tick = paint_tick = HAL_GetTick();
+    paint();
+    dirty = 0;
+}
+
+void App_Tick(void)
+{
+    uint32_t now = HAL_GetTick();
+    uint8_t keys = key_scan();
+    serial_poll();
+    if (page && (keys & 8u)) {
+        page = led_mode = 0;
+        set_leds(0, 0);
+    } else if (!page) {
+        if (keys & 1u) { selected = (selected + 3u) % 4u; dirty = 1; }
+        else if (keys & 2u) { selected = (selected + 1u) % 4u; dirty = 1; }
+        else if (keys & 4u) { page = selected + 1u; dirty = 1; }
+    } else if (page == 1) {
+        if (keys & 1u) {
+            led_mode = (led_mode == 1u) ? 0u : 1u;
+            set_leds(led_mode == 1u, led_mode == 1u);
+        } else if (keys & 2u) {
+            led_mode = 2;
+            blink_tick = now;
+            set_leds(1, 0);
+        }
+    }
+    if (page == 1 && led_mode == 2 && (uint32_t)(now - blink_tick) >= 500u) {
+        blink_tick = now;
+        set_leds(!led1, !led2);
+    }
+    if (!OLED_IsReady() && (uint32_t)(now - probe_tick) >= 1000u) {
+        probe_tick = now;
+        OLED_Init();
+        dirty = 1;
+    }
+    if (dirty && (uint32_t)(now - paint_tick) >= 50u) {
+        paint_tick = now;
+        paint();
+        dirty = 0;
+    }
+}
