@@ -2,7 +2,7 @@
 /**
   ******************************************************************************
   * @file           : main.c
-  * @brief          : Main program body -- menu, LEDs and serial interface
+  * @brief          : Main program body -- UART WIRING MONITOR (diagnostic build)
   ******************************************************************************
   * @attention
   *
@@ -14,6 +14,19 @@
   * If no LICENSE file comes with this software, it is provided AS-IS.
   *
   ******************************************************************************
+  *
+  *  TEMPORARY DIAGNOSTIC BUILD -- not the competition firmware.
+  *
+  *  1) LED1 mirrors PA10 (RX) and LED2 mirrors PA9 (TX).
+  *     LEDs are active-low, so the pin level goes straight through:
+  *     pin LOW -> LED lit, pin HIGH -> LED dark.
+  *     => touch a GND jumper to a breadboard hole; when LED1 lights, that
+  *        hole is electrically PA10.
+  *  2) OLED shows live levels plus how many bytes USART1 has received.
+  *     A rising RX count proves the whole CH340 -> board link works.
+  *  3) USART1 = 9600 8N1, polled (no interrupts, so it cannot clash with
+  *     the callbacks app.c already defines).
+  *  4) KEY1 resets the counters.
   */
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
@@ -22,7 +35,7 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "oled.h"
-#include "app.h"
+#include <stdio.h>
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -46,7 +59,9 @@ I2C_HandleTypeDef hi2c1;
 UART_HandleTypeDef huart1;
 
 /* USER CODE BEGIN PV */
-
+static volatile uint32_t rx_count = 0;
+static volatile uint32_t rx_garbage = 0;
+static volatile uint8_t  rx_last = 0;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -68,7 +83,7 @@ static const uint16_t      key_pin [KEY_NUM] = {KEY1_Pin, KEY2_Pin, KEY3_Pin, KE
 
 /* Scan 4 keys with software debounce. Non-blocking.
    Returns a bitmask: bit0=KEY1 bit1=KEY2 bit2=KEY3 bit3=KEY4.
-   A bit is set only at the moment the key is confirmed pressed. */
+   (Kept because app.c calls it; here KEY1 is reused to clear the counters.) */
 uint8_t key_scan(void)
 {
     static uint8_t  last_raw[KEY_NUM] = {1,1,1,1};
@@ -93,6 +108,40 @@ uint8_t key_scan(void)
     }
     return events;
 }
+
+/* Polled USART1 receive: no interrupt, no callback, no clash with app.c.
+   Any activity on PA10 -- even a wrong-baud byte -- bumps rx_garbage, so the
+   counter alone tells you the wire is live. */
+static void serial_poll(void)
+{
+    uint32_t sr = USART1->SR;
+
+    if (sr & (USART_SR_RXNE | USART_SR_ORE | USART_SR_FE | USART_SR_NE | USART_SR_PE)) {
+        uint8_t b = (uint8_t)USART1->DR;   /* reading DR clears RXNE and the error flags */
+        if (sr & USART_SR_RXNE) { rx_last = b; rx_count++; }
+        else                    { rx_garbage++; }
+    }
+}
+
+static void draw_monitor(void)
+{
+    char t[24];
+    unsigned a9  = (HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_9)  == GPIO_PIN_SET) ? 1u : 0u;
+    unsigned a10 = (HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_10) == GPIO_PIN_SET) ? 1u : 0u;
+    uint32_t c = rx_count;
+    uint32_t g = rx_garbage;
+    unsigned l = rx_last;
+
+    OLED_Clear();
+    OLED_ShowStr(0, 0, "UART MONITOR");
+    snprintf(t, sizeof(t), "PA9=%u PA10=%u", a9, a10);
+    OLED_ShowStr(1, 0, t);
+    snprintf(t, sizeof(t), "RX=%lu", (unsigned long)c);
+    OLED_ShowStr(2, 0, t);
+    snprintf(t, sizeof(t), "ERR=%lu L=%02X", (unsigned long)g, l);
+    OLED_ShowStr(3, 0, t);
+    OLED_Refresh();
+}
 /* USER CODE END 0 */
 
 /**
@@ -103,7 +152,9 @@ int main(void)
 {
 
   /* USER CODE BEGIN 1 */
-  /* Application state is maintained in app.c. */
+  GPIO_PinState shown_a9, shown_a10;
+  uint32_t last_draw, probe_tick;
+  uint32_t shown_count = 0xFFFFFFFFu;
   /* USER CODE END 1 */
 
   /* MCU Configuration--------------------------------------------------------*/
@@ -127,7 +178,12 @@ int main(void)
   MX_I2C1_Init();
   MX_USART1_UART_Init();
   /* USER CODE BEGIN 2 */
-  App_Init();
+  OLED_Init();
+  last_draw  = HAL_GetTick();
+  probe_tick = last_draw;
+  shown_a9   = HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_9);
+  shown_a10  = HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_10);
+  draw_monitor();
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -137,7 +193,34 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-    App_Tick();
+    GPIO_PinState pa9  = HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_9);
+    GPIO_PinState pa10 = HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_10);
+    uint32_t now = HAL_GetTick();
+    uint8_t  keys;
+
+    serial_poll();
+
+    /* LED1 follows PA10, LED2 follows PA9.  LEDs are active-low, so the
+       electrical level is written straight through: LOW pin -> LED lit. */
+    HAL_GPIO_WritePin(LED1_GPIO_Port, LED1_Pin, pa10);
+    HAL_GPIO_WritePin(LED2_GPIO_Port, LED2_Pin, pa9);
+
+    keys = key_scan();
+    if (keys & 0x01u) { rx_count = 0; rx_garbage = 0; rx_last = 0; }
+
+    if (pa9 != shown_a9 || pa10 != shown_a10 || rx_count != shown_count ||
+        (uint32_t)(now - last_draw) >= 250u)
+    {
+        shown_a9    = pa9;
+        shown_a10   = pa10;
+        shown_count = rx_count;
+        last_draw   = now;
+        draw_monitor();
+    }
+    if (!OLED_IsReady() && (uint32_t)(now - probe_tick) >= 1000u) {
+        probe_tick = now;
+        OLED_Init();
+    }
   }
   /* USER CODE END 3 */
 }
@@ -238,6 +321,7 @@ static void MX_USART1_UART_Init(void)
     Error_Handler();
   }
   /* USER CODE BEGIN USART1_Init 2 */
+
   /* USER CODE END USART1_Init 2 */
 
 }
