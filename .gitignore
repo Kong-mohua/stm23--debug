@@ -21,6 +21,7 @@ MDK-ARM/*.uvoptx
 
 # 构建日志
 build_log.txt
+build_*.log
 
 # 主机单元测试产物（由 Tests/run.ps1 生成）
 Tests/*.exe
