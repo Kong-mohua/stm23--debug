@@ -6,6 +6,9 @@
 /* hi2c1 is defined in main.c by CubeMX */
 extern I2C_HandleTypeDef hi2c1;
 
+/* Implemented in main.c (USER CODE 4): frees a stuck bus and restarts I2C1. */
+extern void I2C1_RecoverBus(void);
+
 #define OLED_ADDR   0x78   /* 0x3C << 1 */
 #define OLED_CMD    0x00
 #define OLED_DATA   0x40
@@ -78,8 +81,15 @@ void OLED_Init(void)
     /* The caller allows power-on settling and retries once per second. */
     if (HAL_I2C_IsDeviceReady(&hi2c1, OLED_ADDR, 1, 10) != HAL_OK)
     {
-        oled_ok = 0;
-        return;
+        /* A timeout can leave the bus (or the I2C peripheral's BUSY flag)
+           wedged, and then every later transfer fails instantly: free the bus
+           and restart the peripheral before retrying once. */
+        I2C1_RecoverBus();
+        if (HAL_I2C_IsDeviceReady(&hi2c1, OLED_ADDR, 1, 10) != HAL_OK)
+        {
+            oled_ok = 0;
+            return;
+        }
     }
     oled_ok = 1;
 

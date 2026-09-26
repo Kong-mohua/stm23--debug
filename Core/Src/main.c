@@ -290,6 +290,52 @@ static void MX_GPIO_Init(void)
 
 /* USER CODE BEGIN 4 */
 
+/* Release a stuck I2C1 bus and restart the peripheral.
+ *
+ * Inside HAL_I2C_* a timeout can leave the bus (or the peripheral BUSY flag)
+ * wedged: HAL does not always get to send STOP, and while BUSY every later
+ * transfer fails immediately.  The panel retry loop in app.c only re-probes,
+ * so without this the OLED stays dark even after the disturbance is gone.
+ *
+ * Here the two pins are taken over as plain open-drain GPIOs, up to 9 pulses
+ * are clocked out until the slave releases SDA, a STOP is emitted, and the
+ * I2C peripheral is re-armed.  Safe to call at any time. */
+void I2C1_RecoverBus(void)
+{
+  GPIO_InitTypeDef gi = {0};
+
+  HAL_I2C_DeInit(&hi2c1);
+
+  gi.Pin   = GPIO_PIN_6 | GPIO_PIN_7;
+  gi.Mode  = GPIO_MODE_OUTPUT_OD;
+  gi.Pull  = GPIO_NOPULL;
+  gi.Speed = GPIO_SPEED_FREQ_HIGH;
+  HAL_GPIO_Init(GPIOB, &gi);
+
+  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_7, GPIO_PIN_SET);        /* release SDA */
+  for (uint32_t i = 0; i < 9u; ++i) {
+    if (HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_7) != GPIO_PIN_RESET)
+      break;                                                /* slave let go */
+    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_6, GPIO_PIN_RESET);   /* SCL low      */
+    for (volatile uint32_t d = 0; d < 100u; ++d) { }
+    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_6, GPIO_PIN_SET);     /* SCL high     */
+    for (volatile uint32_t d = 0; d < 100u; ++d) { }
+  }
+
+  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_7, GPIO_PIN_RESET);     /* STOP: SDA low */
+  for (volatile uint32_t d = 0; d < 100u; ++d) { }
+  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_6, GPIO_PIN_SET);
+  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_7, GPIO_PIN_SET);       /* SDA high      */
+  for (volatile uint32_t d = 0; d < 200u; ++d) { }
+
+  gi.Mode = GPIO_MODE_AF_OD;                                /* back to I2C   */
+  gi.Pull = GPIO_PULLUP;
+  HAL_GPIO_Init(GPIOB, &gi);
+
+  MX_I2C1_Init();
+  HAL_Delay(1);
+}
+
 /* USER CODE END 4 */
 
 /**
