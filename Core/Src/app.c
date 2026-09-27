@@ -1,5 +1,6 @@
 #include "app.h"
 #include "oled.h"
+#include "motor.h"
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -14,9 +15,12 @@ static volatile uint16_t rx_head, rx_tail;
 static volatile uint8_t rx_lost;
 static char line[32];
 static uint8_t line_len, discard_line;
+static volatile uint32_t rx_tick;
 static int32_t value_a;
 static uint8_t page, selected, led_mode, led1, led2, dirty;
 static uint32_t blink_tick, paint_tick, probe_tick;
+static uint32_t motor_tick;
+static uint8_t motor_step;
 
 static void set_leds(uint8_t one, uint8_t two)
 {
@@ -51,15 +55,33 @@ static void reply(const char *s)
     HAL_UART_Transmit(&uart, (uint8_t *)s, (uint16_t)strlen(s), 30);
 }
 
+static uint8_t same_ci(char a, char b)
+{
+    if (a >= 'a' && a <= 'z') a = (char)(a - 'a' + 'A');
+    if (b >= 'a' && b <= 'z') b = (char)(b - 'a' + 'A');
+    return (uint8_t)(a == b);
+}
+
+static uint8_t is_get_a(const char *s)
+{
+    return (uint8_t)(same_ci(s[0], 'G') && same_ci(s[1], 'E') && same_ci(s[2], 'T') &&
+                     s[3] == ' ' && same_ci(s[4], 'A') && s[5] == '\0');
+}
+
 static void command(void)
 {
     int32_t parsed;
     char out[20];
+    const char *s = line;
+
     line[line_len] = '\0';
-    if (strcmp(line, "GET A") == 0) {
+    while (*s == ' ') ++s;                                       /* tolerate padding */
+    while (line_len && line[line_len - 1] == ' ') line[--line_len] = '\0';
+
+    if (is_get_a(s)) {
         snprintf(out, sizeof(out), "%ld\r\n", (long)value_a);
         reply(out);
-    } else if (parse_number(line, &parsed)) {
+    } else if (parse_number(s, &parsed)) {
         value_a = parsed;
         if (page == 2) dirty = 1;
         reply("OK\r\n");
@@ -96,6 +118,11 @@ static void serial_poll(void)
             else line[line_len++] = (char)c;
         }
     }
+    /* Host tools that send without any line ending: an idle gap ends the line. */
+    if (line_len && !discard_line && (uint32_t)(HAL_GetTick() - rx_tick) >= 200u) {
+        command();
+        line_len = 0;
+    }
 }
 
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *h)
@@ -105,6 +132,7 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *h)
     next = (rx_head + 1u) % RX_SIZE;
     if (next == rx_tail) rx_lost = 1;
     else { rx_buf[rx_head] = rx_byte; rx_head = next; }
+    rx_tick = HAL_GetTick();
     HAL_UART_Receive_IT(&uart, &rx_byte, 1);
 }
 
@@ -114,6 +142,24 @@ void HAL_UART_ErrorCallback(UART_HandleTypeDef *h)
     rx_lost = 1;
     if (h->RxState == HAL_UART_STATE_READY)
         HAL_UART_Receive_IT(&uart, &rx_byte, 1);
+}
+
+/* Motor self test, shown on the "line follow" page until the tracking sensor
+   module arrives: forward, stop, reverse, turn left, turn right, done. */
+static const char *const motor_step_text[] = {
+    "1 FORWARD", "2 STOP", "3 REVERSE", "4 TURN LEFT", "5 TURN RIGHT", "6 DONE"
+};
+
+static void motor_test_apply(uint8_t step)
+{
+    switch (step) {
+    case 0: Motor_Set(50, 50);   break;
+    case 1: Motor_Set(0, 0);     break;
+    case 2: Motor_Set(-50, -50); break;
+    case 3: Motor_Set(-50, 50);  break;   /* left back / right ahead  */
+    case 4: Motor_Set(50, -50);  break;   /* left ahead / right back  */
+    default: Motor_Brake();      break;
+    }
 }
 
 static void paint(void)
@@ -140,6 +186,11 @@ static void paint(void)
         snprintf(text, sizeof(text), "a=%ld", (long)value_a);
         OLED_ShowStr(2, 0, text);
         OLED_ShowStr(3, 0, "K4:BACK");
+    } else if (page == 3) {
+        OLED_ShowMix(0, 0, items[page - 1]);
+        OLED_ShowStr(1, 0, "MOTOR SELF TEST");
+        OLED_ShowStr(2, 0, motor_step_text[motor_step]);
+        OLED_ShowStr(3, 0, "K4:STOP+BACK");
     } else {
         OLED_ShowMix(0, 0, items[page - 1]);
         OLED_ShowStr(1, 0, "NOT IMPLEMENTED");
@@ -154,6 +205,7 @@ void App_Init(void)
     page = selected = led_mode = 0;
     value_a = 0;
     set_leds(0, 0);
+    Motor_Init();   /* driver standby: wheels stay off until the self test runs */
     HAL_Delay(100); /* power-on settling only; never used for LED flashing */
     OLED_Init();
     if (HAL_UART_Receive_IT(&uart, &rx_byte, 1) != HAL_OK) Error_Handler();
@@ -170,10 +222,19 @@ void App_Tick(void)
     if (page && (keys & 8u)) {
         page = led_mode = 0;
         set_leds(0, 0);
+        Motor_Brake();
     } else if (!page) {
         if (keys & 1u) { selected = (selected + 3u) % 4u; dirty = 1; }
         else if (keys & 2u) { selected = (selected + 1u) % 4u; dirty = 1; }
-        else if (keys & 4u) { page = selected + 1u; dirty = 1; }
+        else if (keys & 4u) {
+            page = selected + 1u;
+            dirty = 1;
+            if (page == 3u) {            /* start the motor self test */
+                motor_step = 0;
+                motor_tick = now;
+                motor_test_apply(0);
+            }
+        }
     } else if (page == 1) {
         if (keys & 1u) {
             led_mode = (led_mode == 1u) ? 0u : 1u;
@@ -187,6 +248,12 @@ void App_Tick(void)
     if (page == 1 && led_mode == 2 && (uint32_t)(now - blink_tick) >= 500u) {
         blink_tick = now;
         set_leds(!led1, !led2);
+    }
+    if (page == 3u && motor_step < 5u && (uint32_t)(now - motor_tick) >= 1500u) {
+        motor_tick = now;
+        ++motor_step;
+        motor_test_apply(motor_step);
+        dirty = 1;
     }
     if (!OLED_IsReady() && (uint32_t)(now - probe_tick) >= 1000u) {
         probe_tick = now;
