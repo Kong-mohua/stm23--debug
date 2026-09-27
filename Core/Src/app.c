@@ -153,11 +153,11 @@ static const char *const motor_step_text[] = {
 static void motor_test_apply(uint8_t step)
 {
     switch (step) {
-    case 0: Motor_Set(50, 50);   break;
+    case 0: Motor_Set(85, 85);   break;   /* strong duty: 6V - L298N drop needs it */
     case 1: Motor_Set(0, 0);     break;
-    case 2: Motor_Set(-50, -50); break;
-    case 3: Motor_Set(-50, 50);  break;   /* left back / right ahead  */
-    case 4: Motor_Set(50, -50);  break;   /* left ahead / right back  */
+    case 2: Motor_Set(-85, -85); break;
+    case 3: Motor_Set(-75, 75);  break;   /* left back / right ahead  */
+    case 4: Motor_Set(75, -75);  break;   /* left ahead / right back  */
     default: Motor_Brake();      break;
     }
 }
