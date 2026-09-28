@@ -1,6 +1,7 @@
 #include "app.h"
 #include "oled.h"
 #include "motor.h"
+#include "track.h"
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -21,6 +22,14 @@ static uint8_t page, selected, led_mode, led1, led2, dirty;
 static uint32_t blink_tick, paint_tick, probe_tick;
 static uint32_t motor_tick;
 static uint8_t motor_step;
+
+/* Line following: differential steering; the position error shifts speed
+   between the two wheels (both stay forward). */
+#define FOLLOW_BASE 80      /* cruise speed, percent (moves fine on 6 V) */
+#define FOLLOW_K    35      /* steering gain: corr = pos * K / 100       */
+static uint8_t follow_on;
+static int16_t follow_corr;
+static uint32_t scan_tick, lost_tick;
 
 static void set_leds(uint8_t one, uint8_t two)
 {
@@ -144,8 +153,7 @@ void HAL_UART_ErrorCallback(UART_HandleTypeDef *h)
         HAL_UART_Receive_IT(&uart, &rx_byte, 1);
 }
 
-/* Motor self test, shown on the "line follow" page until the tracking sensor
-   module arrives: forward, stop, reverse, turn left, turn right, done. */
+/* Motor self test: forward, stop, reverse, turn left, turn right, done. */
 static const char *const motor_step_text[] = {
     "1 FORWARD", "2 STOP", "3 REVERSE", "4 TURN LEFT", "5 TURN RIGHT", "6 DONE"
 };
@@ -188,9 +196,23 @@ static void paint(void)
         OLED_ShowStr(3, 0, "K4:BACK");
     } else if (page == 3) {
         OLED_ShowMix(0, 0, items[page - 1]);
-        OLED_ShowStr(1, 0, "MOTOR SELF TEST");
-        OLED_ShowStr(2, 0, motor_step_text[motor_step]);
-        OLED_ShowStr(3, 0, "K4:STOP+BACK");
+        if (motor_step < 5u) {
+            OLED_ShowStr(1, 0, "MOTOR SELF TEST");
+            OLED_ShowStr(2, 0, motor_step_text[motor_step]);
+            OLED_ShowStr(3, 0, "K4:STOP+BACK");
+        } else {
+            char bits[9];
+            for (uint8_t i = 0; i < 8u; ++i) bits[i] = (g_track_mask & (1u << i)) ? '1' : '0';
+            bits[8] = '\0';
+            snprintf(text, sizeof(text), "S:%s %s", bits, follow_on ? "RUN" : "STOP");
+            OLED_ShowStr(1, 0, text);
+            if (g_track_pos == TRACK_NO_LINE) OLED_ShowStr(2, 0, "POS: NO LINE");
+            else {
+                snprintf(text, sizeof(text), "POS:%+d", (int)g_track_pos);
+                OLED_ShowStr(2, 0, text);
+            }
+            OLED_ShowStr(3, 0, "K1:TEST K2:GO");
+        }
     } else {
         OLED_ShowMix(0, 0, items[page - 1]);
         OLED_ShowStr(1, 0, "NOT IMPLEMENTED");
@@ -204,8 +226,12 @@ void App_Init(void)
 {
     page = selected = led_mode = 0;
     value_a = 0;
+    follow_on = 0;
+    follow_corr = 0;
+    motor_step = 5u;                /* page 3 idles until K1 / K2 */
     set_leds(0, 0);
     Motor_Init();   /* driver standby: wheels stay off until the self test runs */
+    Track_Init();   /* 8-way grayscale sensor + ADC on PA6 */
     HAL_Delay(100); /* power-on settling only; never used for LED flashing */
     OLED_Init();
     if (HAL_UART_Receive_IT(&uart, &rx_byte, 1) != HAL_OK) Error_Handler();
@@ -221,6 +247,7 @@ void App_Tick(void)
     serial_poll();
     if (page && (keys & 8u)) {
         page = led_mode = 0;
+        follow_on = 0;
         set_leds(0, 0);
         Motor_Brake();
     } else if (!page) {
@@ -229,10 +256,8 @@ void App_Tick(void)
         else if (keys & 4u) {
             page = selected + 1u;
             dirty = 1;
-            if (page == 3u) {            /* start the motor self test */
-                motor_step = 0;
-                motor_tick = now;
-                motor_test_apply(0);
+            if (page == 3u) {            /* tracking page: idle until asked */
+                motor_step = 5u;
             }
         }
     } else if (page == 1) {
@@ -243,6 +268,20 @@ void App_Tick(void)
             led_mode = 2;
             blink_tick = now;
             set_leds(1, 0);
+        }
+    } else if (page == 3) {
+        if (keys & 1u) {                 /* K1: replay the motor self test */
+            follow_on = 0;
+            motor_step = 0u;
+            motor_tick = now;
+            motor_test_apply(0);
+            dirty = 1;
+        } else if (keys & 2u) {          /* K2: start / stop line following */
+            motor_step = 5u;             /* abort the self test if it runs */
+            follow_on = !follow_on;
+            if (follow_on) { lost_tick = now; follow_corr = 0; }
+            else Motor_Brake();
+            dirty = 1;
         }
     }
     if (page == 1 && led_mode == 2 && (uint32_t)(now - blink_tick) >= 500u) {
@@ -255,12 +294,34 @@ void App_Tick(void)
         motor_test_apply(motor_step);
         dirty = 1;
     }
+    if (page == 3u) {                    /* sensor scan: live view + control */
+        if ((uint32_t)(now - scan_tick) >= (follow_on ? 5u : 50u)) {
+            scan_tick = now;
+            Track_Scan();
+            if (motor_step >= 5u) dirty = 1;
+            if (follow_on) {
+                int16_t pos = g_track_pos;
+                if (pos != TRACK_NO_LINE) {
+                    lost_tick = now;
+                    follow_corr = (int16_t)((int32_t)pos * FOLLOW_K / 100);
+                }
+                if ((uint32_t)(now - lost_tick) <= 1500u) {
+                    Motor_Set((int16_t)(FOLLOW_BASE + follow_corr),
+                              (int16_t)(FOLLOW_BASE - follow_corr));
+                } else {
+                    Motor_Brake();       /* line lost for 1.5 s: stop safely */
+                    follow_on = 0;
+                    dirty = 1;
+                }
+            }
+        }
+    }
     if (!OLED_IsReady() && (uint32_t)(now - probe_tick) >= 1000u) {
         probe_tick = now;
         OLED_Init();
         dirty = 1;
     }
-    if (dirty && (uint32_t)(now - paint_tick) >= 50u) {
+    if (dirty && (uint32_t)(now - paint_tick) >= ((page == 3u && follow_on) ? 250u : 50u)) {
         paint_tick = now;
         paint();
         dirty = 0;
