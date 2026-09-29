@@ -11,7 +11,13 @@
  * Pin choice note: PA6 was tried first but is unusable as an analog input
  * on this expansion board -- the on-board 4-digit display hangs its "g"
  * segment LED on PA6 (common anode tied to 3.3V), which clamps the pin
- * around ~2.3V. PB1 is not connected to anything else on the board. */
+ * around ~2.3V. PB1 is not connected to anything else on the board.
+ *
+ * Fault handling: a failed ADC conversion is NOT data.  If any conversion
+ * in a scan fails, that scan reports mask = 0 / pos = TRACK_NO_LINE; with
+ * low-active polarity a "0" sample would otherwise look like every probe
+ * sitting on the line (centered) and the stop-on-line-loss logic would
+ * never trigger. */
 
 volatile uint16_t g_track_raw[8];
 volatile uint8_t  g_track_mask;
@@ -29,15 +35,20 @@ static void settle_delay(void)
     while (n--) { }
 }
 
-static uint16_t adc_read(void)
+/* Convert OUT once.  Returns 1 on success, 0 if the ADC never completed
+   (in that case *out keeps its previous value). */
+static uint8_t adc_read(uint16_t *out)
 {
-    uint16_t v = 0;
+    uint8_t ok = 0u;
+
     if (HAL_ADC_Start(&hadc1) == HAL_OK) {
-        if (HAL_ADC_PollForConversion(&hadc1, 2u) == HAL_OK)
-            v = (uint16_t)HAL_ADC_GetValue(&hadc1);
+        if (HAL_ADC_PollForConversion(&hadc1, 2u) == HAL_OK) {
+            *out = (uint16_t)HAL_ADC_GetValue(&hadc1);
+            ok = 1u;
+        }
         HAL_ADC_Stop(&hadc1);
     }
-    return v;
+    return ok;
 }
 
 void Track_Init(void)
@@ -86,23 +97,35 @@ void Track_Scan(void)
 {
     /* probe weights: channel 0 = leftmost (-100) .. channel 7 (right) */
     static const int16_t weight[8] = { -100, -71, -43, -14, 14, 43, 71, 100 };
-    uint8_t i, count = 0;
+    uint8_t i, count = 0, ok = 1u;
     uint8_t mask = 0;
     int32_t sum = 0;
+    uint16_t v;
 
     for (i = 0; i < 8u; ++i) {
         HAL_GPIO_WritePin(GPIOB, GPIO_PIN_10, (i & 1u) ? GPIO_PIN_SET : GPIO_PIN_RESET);
         HAL_GPIO_WritePin(GPIOB, GPIO_PIN_11, (i & 2u) ? GPIO_PIN_SET : GPIO_PIN_RESET);
         HAL_GPIO_WritePin(GPIOA, GPIO_PIN_6,  (i & 4u) ? GPIO_PIN_SET : GPIO_PIN_RESET);
         settle_delay();
-        (void)adc_read();                       /* discard: first sample after switch */
-        g_track_raw[i] = adc_read();
+        v = 0u;
+        if (!adc_read(&v)) ok = 0u;             /* discard: first sample after switch */
+        if (!adc_read(&v)) ok = 0u;
+        g_track_raw[i] = v;
+    }
+
+    if (!ok) {
+        /* Fault scan: report "no line" (and no probe hits) rather than
+           letting zeroed samples masquerade as valid data.  The follow
+           loop treats it exactly like a lost line and stops after its
+           timeout. */
+        g_track_mask = 0u;
+        g_track_pos = TRACK_NO_LINE;
+        return;
     }
 
     for (i = 0; i < 8u; ++i) {
-        uint16_t v = g_track_raw[i];
-        uint8_t on = g_track_pol ? (v > g_track_thr) : (v < g_track_thr);
-        if (on) {
+        v = g_track_raw[i];
+        if (g_track_pol ? (v > g_track_thr) : (v < g_track_thr)) {
             mask |= (uint8_t)(1u << i);
             sum += weight[i];
             ++count;

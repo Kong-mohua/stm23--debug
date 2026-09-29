@@ -131,15 +131,36 @@ static void serial_poll(void)
        frame.  A frame already flagged as garbage (illegal byte, overlong
        line, receive overflow) must be closed here as well -- otherwise
        discard_line would stay set and the next command (sent without a
-       line ending) would be swallowed without any reply. */
-    if ((uint32_t)(HAL_GetTick() - rx_tick) >= 200u) {
-        if (discard_line) {
-            reply("ERR\r\n");
-            discard_line = 0;
-            line_len = 0;
-        } else if (line_len) {
-            command();
-            line_len = 0;
+       line ending) would be swallowed without any reply.
+
+       Two more rules matter here:
+       - Only fire when every received byte has been consumed.  The loop
+         above stops after a 32-byte budget, so a longer burst is still in
+         the queue: closing the frame now would re-parse its tail as a new
+         command and could write garbage into value_a.
+       - Sample time and receive state under a masked-interrupt snapshot:
+         a byte landing between the two reads would make the unsigned
+         difference wrap and split "123" into "12" + "3". */
+    if (rx_tail != rx_head)
+        return;                                  /* backlog: keep draining */
+    {
+        uint32_t pmask = __get_PRIMASK();
+        uint32_t now, last;
+        uint8_t  drained;
+        __disable_irq();
+        now = HAL_GetTick();
+        last = rx_tick;
+        drained = (uint8_t)(rx_tail == rx_head);
+        __set_PRIMASK(pmask);
+        if (drained && (uint32_t)(now - last) >= 200u) {
+            if (discard_line) {
+                reply("ERR\r\n");
+                discard_line = 0;
+                line_len = 0;
+            } else if (line_len) {
+                command();
+                line_len = 0;
+            }
         }
     }
 }

@@ -101,7 +101,10 @@ void OLED_Init(void)
         wr_cmd(seq[i]);
 
     OLED_Clear();
-    OLED_Refresh();
+    /* Chunked instead of a blocking full frame: OLED_Init also runs as a
+       recovery path from App_Tick while line following, and ~23 ms of
+       synchronous I2C there would stall the 5 ms steering loop. */
+    OLED_RefreshStart();
 }
 
 void OLED_Clear(void)

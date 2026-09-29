@@ -14,7 +14,13 @@
  *
  *   Powered from 3.3 V so the analog output stays inside the MCU range.
  *   A probe reading ABOVE g_track_thr counts as "on the line" when
- *   g_track_pol == 1 (flip to 0 if the polarity turns out inverted). */
+ *   g_track_pol == 1 (flip to 0 if the polarity turns out inverted).
+ *
+ *   Fault handling: if any ADC conversion in a scan fails, that scan is
+ *   reported as g_track_mask = 0 / g_track_pos = TRACK_NO_LINE instead of
+ *   made-up data (a failed sample must never look like "every probe on the
+ *   line" in low-active mode).  The follow loop then treats it like a lost
+ *   line and stops after its timeout. */
 
 #define TRACK_NO_LINE   999     /* g_track_pos when no probe sees the line */
 
