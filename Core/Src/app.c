@@ -356,7 +356,12 @@ void App_Tick(void)
             }
         }
     }
-    if (!OLED_IsReady() && (uint32_t)(now - probe_tick) >= 1000u) {
+    /* Panel re-probe.  While line following this is deferred: the two
+       synchronous HAL_I2C_IsDeviceReady probes inside OLED_Init can each
+       wait for their whole timeout (~25 ms on a stuck BUSY bus), which
+       would stall the steering loop.  The moment following stops (K2, K4,
+       line lost) the panel is re-initialized again within one tick. */
+    if (!OLED_IsReady() && !follow_on && (uint32_t)(now - probe_tick) >= 1000u) {
         probe_tick = now;
         OLED_Init();
         dirty = 1;

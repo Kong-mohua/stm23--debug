@@ -174,22 +174,24 @@ int main(void) {
     tick += 10; App_Tick();
     assert(g_track_mask == 0u && g_track_pos == TRACK_NO_LINE);
     g_track_pol = 1u; adc_fail = 0;
-    /* OLED recovery while following: re-init must not block with a full
-       frame (was: 60 synchronous transfers in one App_Tick). */
+    /* A dead panel is NOT probed while following: the two synchronous
+       IsDeviceReady timeouts on a stuck bus can each wait for their whole
+       timeout (~25 ms), and the chunked-refresh path must stall nothing. */
     i2c_fail = 1; OLED_Refresh(); assert(!OLED_IsReady());
-    i2c_fail = 0; transfers = 0;
-    tick += 1000; App_Tick();                    /* probe + chunked re-init */
-    assert(OLED_IsReady() && transfers < 40);    /* init commands + first chunk */
-    int t0 = transfers;
-    for (int i = 0; i < 8; ++i) { tick += 10; App_Tick(); }
-    assert(transfers >= t0 + 28);                /* remaining pages pushed in steps */
-    /* No line at all: keep the last steering, then stop after 1.5 s. */
+    int rec0 = i2c_recovers;
+    int tx0 = transfers;
+    for (int i = 0; i < 4; ++i) { tick += 1000; App_Tick(); }   /* 4 probe windows */
+    assert(!OLED_IsReady() && i2c_recovers == rec0);            /* probe deferred */
+    assert(transfers == tx0);                                   /* zero bus traffic */
+    /* No line at all under the probes: keep the last steering, then stop. */
+    i2c_fail = 0;
     adc_script[0] = 1000;
     tick += 10; App_Tick();
     assert(g_track_pos == TRACK_NO_LINE);
     int brakes = motor_brakes;
-    tick += 1600; App_Tick();
+    tick += 1660; App_Tick();                       /* line idle >1.5 s: stop */
     assert(motor_brakes > brakes && follow_on == 0);
+    assert(OLED_IsReady() && i2c_recovers == rec0); /* panel back after stopping */
     /* ---- serial: error frames and backlogs must not corrupt value_a ---- */
     transmitted[0] = 0;
     rx_byte = 0x01; HAL_UART_RxCpltCallback(&uart);  /* illegal control byte */
