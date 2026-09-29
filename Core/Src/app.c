@@ -127,10 +127,20 @@ static void serial_poll(void)
             else line[line_len++] = (char)c;
         }
     }
-    /* Host tools that send without any line ending: an idle gap ends the line. */
-    if (line_len && !discard_line && (uint32_t)(HAL_GetTick() - rx_tick) >= 200u) {
-        command();
-        line_len = 0;
+    /* Host tools that send without any line ending: an idle gap ends the
+       frame.  A frame already flagged as garbage (illegal byte, overlong
+       line, receive overflow) must be closed here as well -- otherwise
+       discard_line would stay set and the next command (sent without a
+       line ending) would be swallowed without any reply. */
+    if ((uint32_t)(HAL_GetTick() - rx_tick) >= 200u) {
+        if (discard_line) {
+            reply("ERR\r\n");
+            discard_line = 0;
+            line_len = 0;
+        } else if (line_len) {
+            command();
+            line_len = 0;
+        }
     }
 }
 
@@ -170,7 +180,8 @@ static void motor_test_apply(uint8_t step)
     }
 }
 
-static void paint(void)
+/* Draw the current screen into the framebuffer (no bus traffic). */
+static void paint_text(void)
 {
     static const char *const items[] = {
         "LED 控制", "信息显示", "巡线功能", "拓展功能"
@@ -219,6 +230,12 @@ static void paint(void)
         OLED_ShowStr(2, 0, "NEEDS HARDWARE");
         OLED_ShowStr(3, 0, "K4:BACK");
     }
+}
+
+/* Draw and push in one blocking go (menus, page transitions). */
+static void paint(void)
+{
+    paint_text();
     OLED_Refresh();
 }
 
@@ -231,7 +248,7 @@ void App_Init(void)
     motor_step = 5u;                /* page 3 idles until K1 / K2 */
     set_leds(0, 0);
     Motor_Init();   /* driver standby: wheels stay off until the self test runs */
-    Track_Init();   /* 8-way grayscale sensor + ADC on PA6 */
+    Track_Init();   /* 8-way grayscale sensor + ADC on PB1 */
     HAL_Delay(100); /* power-on settling only; never used for LED flashing */
     OLED_Init();
     if (HAL_UART_Receive_IT(&uart, &rx_byte, 1) != HAL_OK) Error_Handler();
@@ -294,25 +311,27 @@ void App_Tick(void)
         motor_test_apply(motor_step);
         dirty = 1;
     }
-    if (page == 3u) {                    /* sensor scan: live view + control */
-        if ((uint32_t)(now - scan_tick) >= (follow_on ? 5u : 50u)) {
-            scan_tick = now;
-            Track_Scan();
-            if (motor_step >= 5u) dirty = 1;
-            if (follow_on) {
-                int16_t pos = g_track_pos;
-                if (pos != TRACK_NO_LINE) {
-                    lost_tick = now;
-                    follow_corr = (int16_t)((int32_t)pos * FOLLOW_K / 100);
-                }
-                if ((uint32_t)(now - lost_tick) <= 1500u) {
-                    Motor_Set((int16_t)(FOLLOW_BASE + follow_corr),
-                              (int16_t)(FOLLOW_BASE - follow_corr));
-                } else {
-                    Motor_Brake();       /* line lost for 1.5 s: stop safely */
-                    follow_on = 0;
-                    dirty = 1;
-                }
+    if ((uint32_t)(now - scan_tick) >= (follow_on ? 5u : 50u)) {
+        scan_tick = now;
+        Track_Scan();                    /* always live: calibration from any page */
+        if (page == 3u && motor_step >= 5u) dirty = 1;
+        if (follow_on && page == 3u) {   /* line following control */
+            int16_t pos = g_track_pos;
+            if (pos != TRACK_NO_LINE) {
+                lost_tick = now;
+                follow_corr = (int16_t)((int32_t)pos * FOLLOW_K / 100);
+            }
+            if ((uint32_t)(now - lost_tick) <= 1500u) {
+                int16_t l = (int16_t)(FOLLOW_BASE + follow_corr);
+                int16_t r = (int16_t)(FOLLOW_BASE - follow_corr);
+                /* keep the inner wheel above the stall threshold (6 V + L298N) */
+                if (l < 55) l = 55;
+                if (r < 55) r = 55;
+                Motor_Set(l, r);
+            } else {
+                Motor_Brake();           /* line lost for 1.5 s: stop safely */
+                follow_on = 0;
+                dirty = 1;
             }
         }
     }
@@ -321,7 +340,19 @@ void App_Tick(void)
         OLED_Init();
         dirty = 1;
     }
-    if (dirty && (uint32_t)(now - paint_tick) >= ((page == 3u && follow_on) ? 250u : 50u)) {
+    /* Display update.  While line following, a full blocking refresh costs
+       ~23 ms of I2C time and would stall the 5 ms steering pass; instead the
+       frame is pushed one page (~3 ms) per loop pass between control
+       updates.  Menus keep the simple blocking refresh. */
+    if (page == 3u && follow_on) {
+        if (dirty && (uint32_t)(now - paint_tick) >= 250u) {
+            paint_tick = now;
+            paint_text();
+            dirty = 0;
+            OLED_RefreshStart();
+        }
+        OLED_RefreshStep();              /* idle cycle: returns immediately */
+    } else if (dirty && (uint32_t)(now - paint_tick) >= 50u) {
         paint_tick = now;
         paint();
         dirty = 0;

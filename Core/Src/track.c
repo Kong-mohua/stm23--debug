@@ -4,9 +4,14 @@
 /* YB-MVX05 8-way grayscale tracking sensor, analog multiplexed.
  *
  * One measurement = set the 3 mux address pins, let the analog switch and
- * the probe output settle, then convert OUT (PA6 / ADC1_IN6) to 12 bits.
+ * the probe output settle, then convert OUT (PB1 / ADC1_IN9) to 12 bits.
  * Scan loop reads all 8 probes into g_track_raw[], then derives a 3-bit
- * "on the line" mask and a signed position (-100 .. +100). */
+ * "on the line" mask and a signed position (-100 .. +100).
+ *
+ * Pin choice note: PA6 was tried first but is unusable as an analog input
+ * on this expansion board -- the on-board 4-digit display hangs its "g"
+ * segment LED on PA6 (common anode tied to 3.3V), which clamps the pin
+ * around ~2.3V. PB1 is not connected to anything else on the board. */
 
 volatile uint16_t g_track_raw[8];
 volatile uint8_t  g_track_mask;
@@ -44,20 +49,20 @@ void Track_Init(void)
     __HAL_RCC_GPIOB_CLK_ENABLE();
     __HAL_RCC_ADC1_CLK_ENABLE();
 
-    /* AD0 (PB10), AD1 (PB11), AD2 (PB1): mux channel select */
+    /* AD0 (PB10), AD1 (PB11), AD2 (PA6): mux channel select */
     gi.Pin = GPIO_PIN_10 | GPIO_PIN_11;
     gi.Mode = GPIO_MODE_OUTPUT_PP;
     gi.Pull = GPIO_NOPULL;
     gi.Speed = GPIO_SPEED_FREQ_LOW;
     HAL_GPIO_Init(GPIOB, &gi);
-    gi.Pin = GPIO_PIN_1;
-    HAL_GPIO_Init(GPIOB, &gi);
-
-    /* OUT (PA6): analog input, ADC1_IN6 */
     gi.Pin = GPIO_PIN_6;
+    HAL_GPIO_Init(GPIOA, &gi);
+
+    /* OUT (PB1): analog input, ADC1_IN9 */
+    gi.Pin = GPIO_PIN_1;
     gi.Mode = GPIO_MODE_ANALOG;
     gi.Pull = GPIO_NOPULL;
-    HAL_GPIO_Init(GPIOA, &gi);
+    HAL_GPIO_Init(GPIOB, &gi);
 
     hadc1.Instance = ADC1;
     hadc1.Init.ScanConvMode = ADC_SCAN_DISABLE;
@@ -69,7 +74,7 @@ void Track_Init(void)
     if (HAL_ADC_Init(&hadc1) != HAL_OK) Error_Handler();
     if (HAL_ADCEx_Calibration_Start(&hadc1) != HAL_OK) Error_Handler();
 
-    ch.Channel = ADC_CHANNEL_6;
+    ch.Channel = ADC_CHANNEL_9;
     ch.Rank = ADC_REGULAR_RANK_1;
     ch.SamplingTime = ADC_SAMPLETIME_55CYCLES_5;
     if (HAL_ADC_ConfigChannel(&hadc1, &ch) != HAL_OK) Error_Handler();
@@ -88,7 +93,7 @@ void Track_Scan(void)
     for (i = 0; i < 8u; ++i) {
         HAL_GPIO_WritePin(GPIOB, GPIO_PIN_10, (i & 1u) ? GPIO_PIN_SET : GPIO_PIN_RESET);
         HAL_GPIO_WritePin(GPIOB, GPIO_PIN_11, (i & 2u) ? GPIO_PIN_SET : GPIO_PIN_RESET);
-        HAL_GPIO_WritePin(GPIOB, GPIO_PIN_1,  (i & 4u) ? GPIO_PIN_SET : GPIO_PIN_RESET);
+        HAL_GPIO_WritePin(GPIOA, GPIO_PIN_6,  (i & 4u) ? GPIO_PIN_SET : GPIO_PIN_RESET);
         settle_delay();
         (void)adc_read();                       /* discard: first sample after switch */
         g_track_raw[i] = adc_read();

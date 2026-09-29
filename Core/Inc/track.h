@@ -8,8 +8,9 @@
  *   8 probes X1..X8 -> 3-bit channel select -> single analog output.
  *
  *   AD0 -> PB10      ADC value appears on OUT after a short settle time.
- *   AD1 -> PB11      OUT -> PA6 = ADC1_IN6 (12 bit, 0..4095)
- *   AD2 -> PB1
+ *   AD1 -> PB11      OUT -> PB1 = ADC1_IN9 (12 bit, 0..4095)
+ *   AD2 -> PA6       (PA6 carries the board's display "g" LED -- fine for a
+ *                     digital output, unusable as analog input: clamped ~2.3V)
  *
  *   Powered from 3.3 V so the analog output stays inside the MCU range.
  *   A probe reading ABOVE g_track_thr counts as "on the line" when

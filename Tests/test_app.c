@@ -40,6 +40,28 @@ void Error_Handler(void) { abort(); }
 #include "../Core/Src/app.c"
 #include "key_scan.inc"
 
+/* ---- stubs for the hardware modules that are not compiled on the host ---- */
+
+/* motor.c (L298N driver): record the last differential command */
+static int motor_left, motor_right, motor_brakes, motor_inits;
+void Motor_Init(void) { motor_inits++; Motor_Set(0, 0); }
+void Motor_Set(int16_t left, int16_t right) { motor_left = left; motor_right = right; }
+void Motor_Brake(void) { motor_brakes++; Motor_Set(0, 0); }
+
+/* track.c (YB-MVX05): the test injects g_track_pos / g_track_mask directly */
+static int track_inits, track_scans;
+volatile uint16_t g_track_raw[8];
+volatile uint8_t  g_track_mask;
+volatile int16_t  g_track_pos = TRACK_NO_LINE;
+volatile uint16_t g_track_thr = 2048u;
+volatile uint8_t  g_track_pol = 1u;
+void Track_Init(void) { track_inits++; }
+void Track_Scan(void) { track_scans++; }
+
+/* main.c (USER CODE 4): I2C bus recovery, called by OLED_Init on failure */
+static int i2c_recovers;
+void I2C1_RecoverBus(void) { i2c_recovers++; }
+
 static void press(uint16_t pin) {
     input &= (uint16_t)~pin; App_Tick(); tick += 16; App_Tick();
     input |= pin; App_Tick(); tick += 16; App_Tick();
@@ -58,6 +80,7 @@ int main(void) {
     assert(!parse_number("12x", &n));
     App_Init();
     assert(page == 0 && selected == 0 && !output1 && !output2);
+    assert(motor_inits == 1 && track_inits == 1);
     press(KEY1_Pin); assert(selected == 3);
     press(KEY2_Pin); assert(selected == 0);
     press(KEY3_Pin); assert(page == 1);
@@ -99,9 +122,67 @@ int main(void) {
     assert(!OLED_IsReady() && transfers == 1);
     OLED_Refresh(); assert(transfers == 1);
     i2c_fail = 0; tick += 1000; App_Tick(); assert(OLED_IsReady());
+    /* Bus recovery path: a failed transfer takes the panel down, the probe
+       then runs I2C1_RecoverBus() once before retrying. The next healthy
+       probe must not re-run the recovery. */
+    i2c_fail = 1; OLED_Refresh();
+    assert(!OLED_IsReady());
+    tick += 1000; App_Tick();
+    assert(i2c_recovers == 1 && !OLED_IsReady());
+    i2c_fail = 0; tick += 1000; App_Tick();
+    assert(OLED_IsReady() && i2c_recovers == 1);
+    /* Chunked refresh: one page per call, completion on the 8th, aborts on error. */
+    i2c_fail = 0; transfers = 0; OLED_RefreshStart();
+    for (int i = 0; i < 7; ++i) assert(OLED_RefreshStep() == 0);
+    assert(OLED_RefreshStep() == 1);
+    assert(transfers == 8 * 4);             /* 3 commands + 1 data burst per page */
+    assert(OLED_RefreshStep() == 0 && transfers == 8 * 4);
+    i2c_fail = 1; transfers = 0; OLED_RefreshStart();
+    assert(OLED_RefreshStep() == 0 && !OLED_IsReady() && transfers == 1);
+    OLED_RefreshStep(); assert(transfers == 1);
+    i2c_fail = 0; tick += 1000; App_Tick(); assert(OLED_IsReady());
+    /* ---- line following: start, steer, stall floor, line-loss stop ---- */
+    assert(follow_on == 0);
+    press(KEY1_Pin); assert(selected == 2);
+    press(KEY3_Pin); assert(page == 3 && motor_step == 5u);
+    press(KEY2_Pin); assert(follow_on == 1);     /* K2 starts following */
+    tick += 300; App_Tick();                     /* repaint window opens */
+    int before = transfers;
+    tick += 10; App_Tick();
+    assert(transfers > before);                  /* frame pushed in chunks */
+    g_track_pos = 20; g_track_mask = 0x08;
+    tick += 10; App_Tick();
+    assert(motor_left == 87 && motor_right == 73);   /* line right: left wheel faster */
+    g_track_pos = -100; g_track_mask = 0x01;
+    tick += 10; App_Tick();
+    assert(motor_left == 55 && motor_right == 115);  /* inner-wheel stall floor */
+    g_track_pos = TRACK_NO_LINE;
+    int brakes = motor_brakes;
+    tick += 1600; App_Tick();
+    assert(motor_brakes > brakes && follow_on == 0); /* 1.5 s without a line: stop */
+    assert(track_scans > 0);
+    /* ---- serial: a garbage frame must not swallow the next line-less command ---- */
+    transmitted[0] = 0;
+    rx_byte = 0x01; HAL_UART_RxCpltCallback(&uart);  /* illegal control byte */
+    while (rx_head != rx_tail) serial_poll();
+    tick += 300; serial_poll();                      /* idle gap closes the bad frame */
+    assert(!strcmp(transmitted, "ERR\r\n"));
+    transmitted[0] = 0;
+    send("4242");                                    /* no CR/LF at all */
+    tick += 300; serial_poll();
+    assert(value_a == 4242 && !strcmp(transmitted, "OK\r\n"));
+    /* Same for an overflow-recovered frame. */
+    transmitted[0] = 0;
+    for (int i = 0; i < 150; ++i) { rx_byte = '7'; HAL_UART_RxCpltCallback(&uart); }
+    while (rx_head != rx_tail) serial_poll();
+    tick += 300; serial_poll();
+    assert(!strcmp(transmitted, "ERR\r\n"));
+    transmitted[0] = 0;
+    send("7"); tick += 300; serial_poll();
+    assert(value_a == 7 && !strcmp(transmitted, "OK\r\n"));
     /* Debounce across the 32-bit millisecond counter wrap. */
     input &= (uint16_t)~KEY1_Pin; tick = UINT32_MAX - 8; assert(key_scan() == 0);
     tick = 10; assert(key_scan() == 1); assert(key_scan() == 0);
-    puts("PASS: menus, 90s LED simulation, keys, UART signed bounds/overflow, OLED clipping/recovery, tick rollover");
+    puts("PASS: menus, 90s LED simulation, keys, UART signed bounds/overflow/error-frame recovery, OLED clipping/recovery/chunked refresh, line following (start/steer/stall-floor/loss-stop), tick rollover");
     return 0;
 }

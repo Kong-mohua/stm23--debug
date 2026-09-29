@@ -20,6 +20,10 @@ static uint8_t fb[8][128];
    initialization once per second, while keys and LEDs continue to work. */
 static uint8_t oled_ok = 0;
 
+/* Chunked-refresh cursor: -1 = idle, 0..7 = next page to push.
+   Used by OLED_RefreshStart()/OLED_RefreshStep() for real-time screens. */
+static int8_t refresh_page = -1;
+
 /* ---------------- low level ---------------- */
 
 static void wr_cmd(uint8_t c)
@@ -109,6 +113,8 @@ uint8_t OLED_IsReady(void) { return oled_ok; }
 
 void OLED_Refresh(void)
 {
+    refresh_page = -1;      /* a full refresh supersedes any chunked cycle */
+
     if (!oled_ok)
         return;
 
@@ -118,6 +124,43 @@ void OLED_Refresh(void)
         wr_cmd(0x10);       /* high column */
         wr_data(fb[p], 128);
     }
+}
+
+/* Split refresh for latency-sensitive screens (line following): one page
+   (~3 ms of bus time) per call, so the caller's control loop keeps running
+   between chunks instead of blocking ~23 ms for the whole frame.
+   Begin a cycle with OLED_RefreshStart(), then call OLED_RefreshStep() once
+   per loop pass; an idle step returns 0 immediately. */
+void OLED_RefreshStart(void)
+{
+    refresh_page = oled_ok ? 0 : -1;
+}
+
+uint8_t OLED_RefreshStep(void)
+{
+    uint8_t p;
+
+    if (refresh_page < 0 || !oled_ok) {
+        refresh_page = -1;
+        return 0u;
+    }
+
+    p = (uint8_t)refresh_page;
+    wr_cmd((uint8_t)(0xB0u + p));     /* set page      */
+    wr_cmd(0x00);                     /* low  column   */
+    wr_cmd(0x10);                     /* high column   */
+    wr_data(fb[p], 128);
+
+    if (!oled_ok) {                   /* bus error: abort the cycle */
+        refresh_page = -1;
+        return 0u;
+    }
+    if (p >= 7u) {                    /* last page: frame complete  */
+        refresh_page = -1;
+        return 1u;
+    }
+    refresh_page = (int8_t)(p + 1u);
+    return 0u;
 }
 
 /* draw one 8x16 ASCII char into row (row*2 = upper page); returns advance in pixels */
