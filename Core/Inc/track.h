@@ -26,6 +26,11 @@
 
 void Track_Init(void);
 void Track_Scan(void);          /* refresh all 8 channels (~1 ms) */
+void Track_ApplySettings(void);
+uint8_t Track_CalibrateWhite(void);
+uint8_t Track_CalibrateBlack(void); /* rejects insufficient or inconsistent contrast */
+extern volatile uint8_t g_track_valid;
+extern volatile uint8_t g_track_calibrated_white;
 
 extern volatile uint16_t g_track_raw[8];   /* last ADC value per channel */
 extern volatile uint8_t  g_track_mask;     /* bit i = channel i on the line */

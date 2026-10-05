@@ -8,6 +8,10 @@ extern GPIO_TypeDef gpio_a, gpio_b, gpio_c;
 #define GPIOB (&gpio_b)
 #define GPIOC (&gpio_c)
 #define GPIO_PIN_1 (1u<<1)
+#define GPIO_PIN_0 (1u<<0)
+#define GPIO_PIN_2 (1u<<2)
+#define GPIO_PIN_3 (1u<<3)
+#define GPIO_PIN_4 (1u<<4)
 #define GPIO_PIN_5 (1u<<5)
 #define GPIO_PIN_6 (1u<<6)
 #define GPIO_PIN_8 (1u<<8)
@@ -61,6 +65,26 @@ typedef struct { uint32_t Channel, Rank, SamplingTime; } ADC_ChannelConfTypeDef;
 #define UART_OVERSAMPLING_16 0
 #define HAL_UART_STATE_READY 0
 #define HAL_OK 0
+typedef struct {
+    void *Instance;
+    struct { uint32_t Prescaler, CounterMode, Period, ClockDivision, AutoReloadPreload; } Init;
+} TIM_HandleTypeDef;
+typedef struct { uint32_t OCMode, Pulse, OCPolarity, OCFastMode; } TIM_OC_InitTypeDef;
+#define TIM2 ((void*)3)
+#define TIM_CHANNEL_1 1
+#define TIM_CHANNEL_2 2
+#define TIM_COUNTERMODE_UP 0
+#define TIM_CLOCKDIVISION_DIV1 0
+#define TIM_AUTORELOAD_PRELOAD_DISABLE 0
+#define TIM_OCMODE_PWM1 0
+#define TIM_OCPOLARITY_HIGH 0
+#define TIM_OCFAST_DISABLE 0
+#define __HAL_RCC_TIM2_CLK_ENABLE() ((void)0)
+void Test_SetCompare(int, uint32_t);
+#define __HAL_TIM_SET_COMPARE(h, channel, value) ((void)(h), Test_SetCompare(channel, value))
+int HAL_TIM_PWM_Init(TIM_HandleTypeDef *);
+int HAL_TIM_PWM_ConfigChannel(TIM_HandleTypeDef *, TIM_OC_InitTypeDef *, int);
+int HAL_TIM_PWM_Start(TIM_HandleTypeDef *, int);
 #define __HAL_RCC_GPIOA_CLK_ENABLE() ((void)0)
 #define __HAL_RCC_GPIOB_CLK_ENABLE() ((void)0)
 #define __HAL_RCC_ADC1_CLK_ENABLE() ((void)0)
@@ -78,6 +102,7 @@ void HAL_NVIC_EnableIRQ(int);
 int HAL_UART_Init(UART_HandleTypeDef *);
 int HAL_UART_Receive_IT(UART_HandleTypeDef *, uint8_t *, uint16_t);
 int HAL_UART_Transmit(UART_HandleTypeDef *, uint8_t *, uint16_t, uint32_t);
+int HAL_UART_Transmit_IT(UART_HandleTypeDef *, uint8_t *, uint16_t);
 void HAL_UART_IRQHandler(UART_HandleTypeDef *);
 int HAL_I2C_IsDeviceReady(I2C_HandleTypeDef *, uint16_t, uint32_t, uint32_t);
 int HAL_I2C_Master_Transmit(I2C_HandleTypeDef *, uint16_t, uint8_t *, uint16_t, uint32_t);

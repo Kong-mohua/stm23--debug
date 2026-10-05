@@ -1,5 +1,6 @@
 #include "track.h"
 #include "main.h"
+#include "settings.h"
 
 /* YB-MVX05 8-way grayscale tracking sensor, analog multiplexed.
  *
@@ -24,6 +25,8 @@ volatile uint8_t  g_track_mask;
 volatile int16_t  g_track_pos = TRACK_NO_LINE;
 volatile uint16_t g_track_thr = 2048u;
 volatile uint8_t  g_track_pol = 1u;     /* 1: line = raw ABOVE thr */
+volatile uint8_t g_track_valid, g_track_calibrated_white;
+static uint16_t thresholds[8], white[8];
 
 static ADC_HandleTypeDef hadc1;
 
@@ -90,6 +93,8 @@ void Track_Init(void)
     ch.SamplingTime = ADC_SAMPLETIME_55CYCLES_5;
     if (HAL_ADC_ConfigChannel(&hadc1, &ch) != HAL_OK) Error_Handler();
 
+    Track_ApplySettings();
+    g_track_calibrated_white = 0;
     Track_Scan();
 }
 
@@ -108,8 +113,8 @@ void Track_Scan(void)
         HAL_GPIO_WritePin(GPIOA, GPIO_PIN_6,  (i & 4u) ? GPIO_PIN_SET : GPIO_PIN_RESET);
         settle_delay();
         v = 0u;
-        if (!adc_read(&v)) ok = 0u;             /* discard: first sample after switch */
-        if (!adc_read(&v)) ok = 0u;
+        if (!adc_read(&v)) { ok = 0u; break; } /* fail fast, not 16 timeouts */
+        if (!adc_read(&v)) { ok = 0u; break; }
         g_track_raw[i] = v;
     }
 
@@ -120,12 +125,13 @@ void Track_Scan(void)
            timeout. */
         g_track_mask = 0u;
         g_track_pos = TRACK_NO_LINE;
+        g_track_valid = 0;
         return;
     }
 
     for (i = 0; i < 8u; ++i) {
         v = g_track_raw[i];
-        if (g_track_pol ? (v > g_track_thr) : (v < g_track_thr)) {
+        if (g_track_pol ? (v > thresholds[i]) : (v < thresholds[i])) {
             mask |= (uint8_t)(1u << i);
             sum += weight[i];
             ++count;
@@ -133,4 +139,40 @@ void Track_Scan(void)
     }
     g_track_mask = mask;
     g_track_pos = count ? (int16_t)(sum / (int32_t)count) : TRACK_NO_LINE;
+    g_track_valid = 1;
+}
+
+void Track_ApplySettings(void)
+{
+    for (uint8_t i = 0; i < 8; ++i) thresholds[i] = settings.threshold[i];
+    g_track_thr = thresholds[0]; /* retained for diagnostic scripts */
+    g_track_pol = settings.polarity;
+}
+uint8_t Track_CalibrateWhite(void)
+{
+    Track_Scan();
+    if (!g_track_valid) { g_track_calibrated_white = 0; return 0; }
+    for (uint8_t i = 0; i < 8; ++i) white[i] = g_track_raw[i];
+    g_track_calibrated_white = 1;
+    return 1;
+}
+uint8_t Track_CalibrateBlack(void)
+{
+    uint16_t candidate[8];
+    uint8_t polarity;
+    if (!g_track_calibrated_white) return 0;
+    Track_Scan();
+    if (!g_track_valid) return 0;
+    polarity = g_track_raw[0] > white[0];
+    for (uint8_t i = 0; i < 8; ++i) {
+        int32_t delta = (int32_t)g_track_raw[i] - white[i];
+        if ((delta > 0) != polarity || (delta > -100 && delta < 100)) return 0;
+        candidate[i] = (uint16_t)((g_track_raw[i] + white[i]) / 2u);
+    }
+    for (uint8_t i = 0; i < 8; ++i) settings.threshold[i] = candidate[i];
+    settings.polarity = polarity;
+    settings.calibrated = 1;
+    Track_ApplySettings();
+    g_track_calibrated_white = 0;
+    return 1;
 }

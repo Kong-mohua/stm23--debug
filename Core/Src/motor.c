@@ -4,6 +4,7 @@
 #define MOTOR_PERIOD   799u
 
 static TIM_HandleTypeDef htim2;
+static int8_t left_direction, right_direction;
 
 static void dir_pins(GPIO_PinState a1, GPIO_PinState a2,
                      GPIO_PinState b1, GPIO_PinState b2)
@@ -20,6 +21,7 @@ void Motor_Init(void)
     TIM_OC_InitTypeDef oc = {0};
 
     __HAL_RCC_TIM2_CLK_ENABLE();
+    __HAL_RCC_GPIOA_CLK_ENABLE();
 
     /* PA0/PA1 = TIM2_CH1/CH2, wired to ENA/ENB on the L298N */
     gi.Pin = GPIO_PIN_0 | GPIO_PIN_1;
@@ -50,8 +52,8 @@ void Motor_Init(void)
     if (HAL_TIM_PWM_ConfigChannel(&htim2, &oc, TIM_CHANNEL_1) != HAL_OK) Error_Handler();
     if (HAL_TIM_PWM_ConfigChannel(&htim2, &oc, TIM_CHANNEL_2) != HAL_OK) Error_Handler();
 
-    HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_1);
-    HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_2);
+    if (HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_1) != HAL_OK) Error_Handler();
+    if (HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_2) != HAL_OK) Error_Handler();
 
     Motor_Brake();      /* both channels off */
 }
@@ -59,6 +61,19 @@ void Motor_Init(void)
 void Motor_Set(int16_t left, int16_t right)
 {
     uint32_t pulse_l, pulse_r;
+    int8_t ld, rd;
+
+    /* Clamp before taking magnitude, including INT16_MIN. Disable enable
+       PWM while changing direction so sequential GPIO writes are harmless. */
+    if (left < -100) left = -100;
+    if (left > 100) left = 100;
+    if (right < -100) right = -100;
+    if (right > 100) right = 100;
+    ld = left > 0 ? 1 : (left < 0 ? -1 : 0);
+    rd = right > 0 ? 1 : (right < 0 ? -1 : 0);
+    if (ld != left_direction) __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_1, 0);
+    if (rd != right_direction) __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_2, 0);
+    left_direction = ld; right_direction = rd;
 
     /* direction first, then magnitude (ENA/ENB carry the PWM) */
     HAL_GPIO_WritePin(GPIOA, GPIO_PIN_2, (left  >= 0) ? GPIO_PIN_SET : GPIO_PIN_RESET);
@@ -82,4 +97,5 @@ void Motor_Brake(void)
     __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_1, 0);
     __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_2, 0);
     dir_pins(GPIO_PIN_RESET, GPIO_PIN_RESET, GPIO_PIN_RESET, GPIO_PIN_RESET);
+    left_direction = right_direction = 0;
 }
