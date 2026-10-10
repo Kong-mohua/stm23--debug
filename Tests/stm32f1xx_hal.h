@@ -2,7 +2,7 @@
 #define TEST_HAL_H
 #include <stdint.h>
 #include <stddef.h>
-typedef struct { int unused; } GPIO_TypeDef;
+typedef struct { uint32_t ODR; uint32_t IDR; } GPIO_TypeDef;
 extern GPIO_TypeDef gpio_a, gpio_b, gpio_c;
 #define GPIOA (&gpio_a)
 #define GPIOB (&gpio_b)

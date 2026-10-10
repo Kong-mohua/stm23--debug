@@ -7,23 +7,18 @@ GPIO_TypeDef gpio_a, gpio_b, gpio_c;
 I2C_HandleTypeDef hi2c1;
 UART_HandleTypeDef huart1;
 static uint32_t tick;
-static uint16_t input = 0xffff;
 static uint8_t output1, output2;
 static int i2c_fail, transfers;
 static char transmitted[2048];
-static uint16_t adc_script[8];        /* value returned for mux channel 0..7 */
-static int adc_fail;                  /* non-zero: conversion never completes */
-static int mux_b10, mux_b11, mux_a6;  /* last written mux select lines */
 uint32_t HAL_GetTick(void) { return tick; }
 void HAL_Delay(uint32_t ms) { tick += ms; }
 void HAL_GPIO_WritePin(GPIO_TypeDef *p, uint16_t pin, GPIO_PinState s) {
     if (p == GPIOC && pin == GPIO_PIN_13) output1 = (s == GPIO_PIN_RESET);
     if (p == GPIOB && pin == GPIO_PIN_5) output2 = (s == GPIO_PIN_RESET);
-    if (p == GPIOB && pin == GPIO_PIN_10) mux_b10 = (s == GPIO_PIN_SET);
-    if (p == GPIOB && pin == GPIO_PIN_11) mux_b11 = (s == GPIO_PIN_SET);
-    if (p == GPIOA && pin == GPIO_PIN_6)  mux_a6  = (s == GPIO_PIN_SET);
 }
-GPIO_PinState HAL_GPIO_ReadPin(GPIO_TypeDef *p, uint16_t pin) { (void)p; return (input & pin) ? GPIO_PIN_SET : GPIO_PIN_RESET; }
+GPIO_PinState HAL_GPIO_ReadPin(GPIO_TypeDef *p, uint16_t pin) {
+    return (p->IDR & pin) ? GPIO_PIN_SET : GPIO_PIN_RESET;
+}
 void HAL_GPIO_Init(GPIO_TypeDef *p, GPIO_InitTypeDef *g) { (void)p; (void)g; }
 void HAL_NVIC_SetPriority(int a, int b, int c) { (void)a; (void)b; (void)c; }
 void HAL_NVIC_EnableIRQ(int a) { (void)a; }
@@ -40,16 +35,6 @@ void HAL_UART_IRQHandler(UART_HandleTypeDef *p) { (void)p; }
 int HAL_I2C_IsDeviceReady(I2C_HandleTypeDef *p, uint16_t a, uint32_t n, uint32_t ms) { (void)p; (void)a; (void)n; (void)ms; return i2c_fail; }
 int HAL_I2C_Master_Transmit(I2C_HandleTypeDef *p, uint16_t a, uint8_t *b, uint16_t n, uint32_t ms) {
     (void)p; (void)a; (void)b; (void)n; (void)ms; transfers++; return i2c_fail;
-}
-int HAL_ADC_Init(ADC_HandleTypeDef *p) { (void)p; return HAL_OK; }
-int HAL_ADCEx_Calibration_Start(ADC_HandleTypeDef *p) { (void)p; return HAL_OK; }
-int HAL_ADC_ConfigChannel(ADC_HandleTypeDef *p, ADC_ChannelConfTypeDef *c) { (void)p; (void)c; return HAL_OK; }
-int HAL_ADC_Start(ADC_HandleTypeDef *p) { (void)p; return HAL_OK; }
-int HAL_ADC_Stop(ADC_HandleTypeDef *p) { (void)p; return HAL_OK; }
-int HAL_ADC_PollForConversion(ADC_HandleTypeDef *p, uint32_t t) { (void)p; (void)t; return adc_fail; }
-uint32_t HAL_ADC_GetValue(ADC_HandleTypeDef *p) {
-    (void)p;
-    return adc_script[(mux_a6 ? 4 : 0) | (mux_b11 ? 2 : 0) | (mux_b10 ? 1 : 0)];
 }
 void Error_Handler(void) { abort(); }
 #include "../Core/Src/oled.c"
@@ -68,12 +53,22 @@ void Motor_Brake(void) { motor_brakes++; Motor_Set(0, 0); }
 static int i2c_recovers;
 void I2C1_RecoverBus(void) { i2c_recovers++; }
 
-/* track.c is compiled as a real translation unit: its ADC path runs against
-   adc_script[] above (the mux address pins select the script slot). */
+/* track.c is compiled as a real translation unit: it reads the 5 sensor
+   levels straight from gpio_a.IDR / gpio_b.IDR (see sensors() below). */
+
+/* Sensor simulation.  bit0 = L2 (PB13), bit1 = L1 (PB11), bit2 = M (PB10),
+   bit3 = R1 (PA8), bit4 = R2 (PB9); a 1 is the level the module drives. */
+#define SENSOR_BBITS (GPIO_PIN_13 | GPIO_PIN_11 | GPIO_PIN_10 | GPIO_PIN_9)
+static void sensors(uint8_t b) {
+    gpio_b.IDR = (uint16_t)((gpio_b.IDR & ~SENSOR_BBITS) |
+        ((b & 0x01u) ? GPIO_PIN_13 : 0) | ((b & 0x02u) ? GPIO_PIN_11 : 0) |
+        ((b & 0x04u) ? GPIO_PIN_10 : 0) | ((b & 0x10u) ? GPIO_PIN_9 : 0));
+    gpio_a.IDR = (uint16_t)((gpio_a.IDR & ~GPIO_PIN_8) | ((b & 0x08u) ? GPIO_PIN_8 : 0));
+}
 
 static void press(uint16_t pin) {
-    input &= (uint16_t)~pin; App_Tick(); tick += 16; App_Tick();
-    input |= pin; App_Tick(); tick += 16; App_Tick();
+    gpio_b.IDR &= (uint16_t)~pin; App_Tick(); tick += 16; App_Tick();
+    gpio_b.IDR |= pin; App_Tick(); tick += 16; App_Tick();
 }
 static void send(const char *s) {
     while (*s) { rx_byte = (uint8_t)*s++; HAL_UART_RxCpltCallback(&uart); }
@@ -87,6 +82,8 @@ int main(void) {
     assert(!parse_number("-2147483649", &n));
     assert(!parse_number("", &n) && !parse_number("-", &n));
     assert(!parse_number("12x", &n));
+    gpio_a.IDR = 0xFFFF; gpio_b.IDR = 0xFFFF;    /* keys released ... */
+    sensors(0x00);                               /* ... sensors see white */
     App_Init();
     assert(page == 0 && selected == 0 && !output1 && !output2);
     assert(motor_inits == 1);
@@ -150,7 +147,7 @@ int main(void) {
     assert(OLED_RefreshStep() == 0 && !OLED_IsReady() && transfers == 1);
     OLED_RefreshStep(); assert(transfers == 1);
     i2c_fail = 0; tick += 1000; App_Tick(); assert(OLED_IsReady());
-    /* ---- line following: start, steer, stall floor, ADC fault, loss stop ---- */
+    /* ---- line following: start, steer, stall floor, polarity, loss stop ---- */
     assert(follow_on == 0);
     press(KEY1_Pin); assert(selected == 2);
     press(KEY3_Pin); assert(page == 3 && motor_step == 5u);
@@ -159,21 +156,27 @@ int main(void) {
     int before = transfers;
     tick += 10; App_Tick();
     assert(transfers > before);                  /* frame pushed in chunks, not 23 ms */
-    /* probe 5 sees the line (+43): left wheel speeds up */
-    for (int i = 0; i < 8; ++i) adc_script[i] = 1000;
-    adc_script[5] = 3000;
+    /* middle probe on the line: straight, base speed */
+    sensors(0x04);
     tick += 10; App_Tick();
-    assert(g_track_pos == 43 && motor_left == 95 && motor_right == 65);
+    assert(g_track_mask == 0x04 && g_track_pos == 0 &&
+           motor_left == 80 && motor_right == 80);
     /* line under the left-most probe: inner-wheel stall floor */
-    adc_script[5] = 1000; adc_script[0] = 3000;
+    sensors(0x01);
     tick += 10; App_Tick();
     assert(g_track_pos == -100 && motor_left == 55 && motor_right == 115);
-    /* A failed conversion is a fault, not "everything on the line":
-       in low-active mode zeroed samples used to give mask=0xFF, pos=0. */
-    g_track_pol = 0u; adc_fail = 1;
+    /* R1 only: gentle right (pos +50 -> corr 17) */
+    sensors(0x08);
     tick += 10; App_Tick();
-    assert(g_track_mask == 0u && g_track_pos == TRACK_NO_LINE);
-    g_track_pol = 1u; adc_fail = 0;
+    assert(g_track_pos == 50 && motor_left == 97 && motor_right == 63);
+    /* inverted-polarity modules: line = low level */
+    g_track_pol = 0u; sensors(0x00);
+    tick += 10; App_Tick();
+    assert(g_track_mask == 0x1F && g_track_pos == 0);
+    g_track_pol = 1u;
+    sensors(0x04);                               /* keep the line visible */
+    tick += 10; App_Tick();
+    assert(g_track_pos == 0);
     /* A dead panel is NOT probed while following: the two synchronous
        IsDeviceReady timeouts on a stuck bus can each wait for their whole
        timeout (~25 ms), and the chunked-refresh path must stall nothing. */
@@ -183,9 +186,10 @@ int main(void) {
     for (int i = 0; i < 4; ++i) { tick += 1000; App_Tick(); }   /* 4 probe windows */
     assert(!OLED_IsReady() && i2c_recovers == rec0);            /* probe deferred */
     assert(transfers == tx0);                                   /* zero bus traffic */
-    /* No line at all under the probes: keep the last steering, then stop. */
+    /* Line lost under the probes: keep the last steering, stop after 1.5 s;
+       the panel recovers in the very tick following the stop. */
     i2c_fail = 0;
-    adc_script[0] = 1000;
+    sensors(0x00);
     tick += 10; App_Tick();
     assert(g_track_pos == TRACK_NO_LINE);
     int brakes = motor_brakes;
@@ -225,8 +229,8 @@ int main(void) {
     send("314"); tick += 300; serial_poll();
     assert(value_a == 314 && !strcmp(transmitted, "OK\r\n"));
     /* Debounce across the 32-bit millisecond counter wrap. */
-    input &= (uint16_t)~KEY1_Pin; tick = UINT32_MAX - 8; assert(key_scan() == 0);
+    gpio_b.IDR &= (uint16_t)~KEY1_Pin; tick = UINT32_MAX - 8; assert(key_scan() == 0);
     tick = 10; assert(key_scan() == 1); assert(key_scan() == 0);
-    puts("PASS: menus, 90s LED simulation, keys, UART bounds/overflow/error-frame/backlog recovery, OLED clipping/recovery/chunked refresh, line following (start/steer/stall-floor/ADC-fault/loss-stop), tick rollover");
+    puts("PASS: menus, 90s LED simulation, keys, UART bounds/overflow/error-frame/backlog recovery, OLED clipping/recovery/chunked refresh, line following (5-way digital: start/steer/stall-floor/polarity/loss-stop), tick rollover");
     return 0;
 }

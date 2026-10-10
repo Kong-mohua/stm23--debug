@@ -1,9 +1,11 @@
-"""Read the 8-way tracking sensor state from the running MCU via SWD.
+"""Read the 5-way digital tracking state from the running MCU via SWD.
 
 Usage:  python read_track.py [samples]     (default 1 sample, 0.5 s apart)
 
 Symbol addresses are parsed from the Keil map file, so it keeps working
-after every rebuild.  Channel order: ch0 = X1 (left) .. ch7 = X8 (right).
+after every rebuild.  Channel order: L2 L1 M R1 R2 (bit0..bit4).  "raw" is
+the level pattern straight off the pins; "line" is the same after
+g_track_pol (bit set = "on the line").
 """
 import re
 import subprocess
@@ -25,11 +27,10 @@ def sym_addr(name):
     raise SystemExit("symbol not found in map: " + name)
 
 
+BITS_A = sym_addr("g_track_bits")
 MASK_A = sym_addr("g_track_mask")
-RAW_OFF = sym_addr("g_track_raw") - MASK_A
+POS_A = sym_addr("g_track_pos")
 POL_A = sym_addr("g_track_pol")
-POS_OFF = sym_addr("g_track_pos") - POL_A
-THR_OFF = sym_addr("g_track_thr") - POL_A
 
 
 def read_mem(addr, nbytes):
@@ -48,25 +49,28 @@ def read_mem(addr, nbytes):
     return bytes(data[:nbytes])
 
 
-def u16(buf, off):
-    return buf[off] | (buf[off + 1] << 8)
+def u16(buf):
+    return buf[0] | (buf[1] << 8)
+
+
+def bits_str(v, n):
+    return "".join("1" if v & (1 << i) else "0" for i in range(n))
 
 
 def sample():
-    wa = read_mem(MASK_A, RAW_OFF + 16)          # mask + 8 raw u16
-    wb = read_mem(POL_A, THR_OFF + 2)            # pol, pos, thr
-    mask = wa[0]
-    raw = [u16(wa, RAW_OFF + i * 2) for i in range(8)]
-    return (raw, mask, u16(wb, POS_OFF), u16(wb, THR_OFF), wb[0])
+    bits = read_mem(BITS_A, 1)[0] & 0x1F
+    mask = read_mem(MASK_A, 1)[0] & 0x1F
+    pos = u16(read_mem(POS_A, 2))
+    pol = read_mem(POL_A, 1)[0]
+    return bits, mask, pos, pol
 
 
 n = int(sys.argv[1]) if len(sys.argv) > 1 else 1
 for k in range(n):
-    raw, mask, pos, thr, pol = sample()
-    bits = "".join("1" if mask & (1 << i) else "0" for i in range(8))
-    print("ch0..ch7: " + " ".join("%4d" % v for v in raw))
-    print("mask=%s (bit0=X1 .. bit7=X8)  pos=%d  thr=%d  pol=%d" %
-          (bits, pos if pos != 999 else -999, thr, pol))
+    bits, mask, pos, pol = sample()
+    shown = pos if pos != 999 else -999
+    print("raw  (L2 L1 M R1 R2) = %s" % bits_str(bits, 5))
+    print("line (L2 L1 M R1 R2) = %s   pos=%d  pol=%d" % (bits_str(mask, 5), shown, pol))
     if k != n - 1:
         print("-")
         time.sleep(0.5)

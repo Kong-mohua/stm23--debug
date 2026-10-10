@@ -233,9 +233,9 @@ static void paint_text(void)
             OLED_ShowStr(2, 0, motor_step_text[motor_step]);
             OLED_ShowStr(3, 0, "K4:STOP+BACK");
         } else {
-            char bits[9];
-            for (uint8_t i = 0; i < 8u; ++i) bits[i] = (g_track_mask & (1u << i)) ? '1' : '0';
-            bits[8] = '\0';
+            char bits[6];
+            for (uint8_t i = 0; i < 5u; ++i) bits[i] = (g_track_mask & (1u << i)) ? '1' : '0';
+            bits[5] = '\0';
             snprintf(text, sizeof(text), "S:%s %s", bits, follow_on ? "RUN" : "STOP");
             OLED_ShowStr(1, 0, text);
             if (g_track_pos == TRACK_NO_LINE) OLED_ShowStr(2, 0, "POS: NO LINE");
@@ -269,7 +269,7 @@ void App_Init(void)
     motor_step = 5u;                /* page 3 idles until K1 / K2 */
     set_leds(0, 0);
     Motor_Init();   /* driver standby: wheels stay off until the self test runs */
-    Track_Init();   /* 8-way grayscale sensor + ADC on PB1 */
+    Track_Init();   /* 5-way digital sensor: L2 PB13, L1 PB11, M PB10, R1 PA8, R2 PB9 */
     HAL_Delay(100); /* power-on settling only; never used for LED flashing */
     OLED_Init();
     if (HAL_UART_Receive_IT(&uart, &rx_byte, 1) != HAL_OK) Error_Handler();
