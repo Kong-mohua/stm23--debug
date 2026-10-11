@@ -60,7 +60,7 @@ def bits_str(v, n):
 def sample():
     bits = read_mem(BITS_A, 1)[0] & 0x1F
     mask = read_mem(MASK_A, 1)[0] & 0x1F
-    pos = u16(read_mem(POS_A, 2))
+    pos = int.from_bytes(read_mem(POS_A, 2), "little", signed=True)
     pol = read_mem(POL_A, 1)[0]
     return bits, mask, pos, pol
 

@@ -24,11 +24,11 @@ void HAL_NVIC_SetPriority(int a, int b, int c) { (void)a; (void)b; (void)c; }
 void HAL_NVIC_EnableIRQ(int a) { (void)a; }
 int HAL_UART_Init(UART_HandleTypeDef *p) { (void)p; return HAL_OK; }
 int HAL_UART_Receive_IT(UART_HandleTypeDef *p, uint8_t *b, uint16_t n) { (void)p; (void)b; (void)n; return HAL_OK; }
-int HAL_UART_Transmit(UART_HandleTypeDef *p, uint8_t *b, uint16_t n, uint32_t timeout) {
-    (void)p; (void)timeout;
+int HAL_UART_Transmit_IT(UART_HandleTypeDef *p, uint8_t *b, uint16_t n) {
     size_t used = strlen(transmitted);
     assert(used + n < sizeof(transmitted));
     memcpy(transmitted + used, b, n); transmitted[used + n] = 0;
+    HAL_UART_TxCpltCallback(p);      /* emulate an instant wire */
     return HAL_OK;
 }
 void HAL_UART_IRQHandler(UART_HandleTypeDef *p) { (void)p; }
@@ -228,9 +228,18 @@ int main(void) {
     transmitted[0] = 0;
     send("314"); tick += 300; serial_poll();
     assert(value_a == 314 && !strcmp(transmitted, "OK\r\n"));
+    /* Sixteen queued replies must all arrive through the async TX ring. */
+    transmitted[0] = 0;
+    for (int i = 0; i < 16; ++i) send("0\n");
+    assert(value_a == 0 && strlen(transmitted) == 16u * 4u);
+    {
+        int oks = 0;
+        for (const char *p = transmitted; (p = strstr(p, "OK\r\n")) != NULL; ++p) ++oks;
+        assert(oks == 16);
+    }
     /* Debounce across the 32-bit millisecond counter wrap. */
     gpio_b.IDR &= (uint16_t)~KEY1_Pin; tick = UINT32_MAX - 8; assert(key_scan() == 0);
     tick = 10; assert(key_scan() == 1); assert(key_scan() == 0);
-    puts("PASS: menus, 90s LED simulation, keys, UART bounds/overflow/error-frame/backlog recovery, OLED clipping/recovery/chunked refresh, line following (5-way digital: start/steer/stall-floor/polarity/loss-stop), tick rollover");
+    puts("PASS: menus, 90s LED simulation, keys, UART bounds/overflow/error-frame/backlog recovery/async-TX-ring, OLED clipping/recovery/chunked refresh, line following (5-way digital: start/steer/stall-floor/polarity/loss-stop/harness-cut stop), tick rollover");
     return 0;
 }

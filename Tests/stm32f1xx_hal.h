@@ -78,6 +78,8 @@ void HAL_NVIC_EnableIRQ(int);
 int HAL_UART_Init(UART_HandleTypeDef *);
 int HAL_UART_Receive_IT(UART_HandleTypeDef *, uint8_t *, uint16_t);
 int HAL_UART_Transmit(UART_HandleTypeDef *, uint8_t *, uint16_t, uint32_t);
+int HAL_UART_Transmit_IT(UART_HandleTypeDef *, uint8_t *, uint16_t);
+void HAL_UART_TxCpltCallback(UART_HandleTypeDef *);
 void HAL_UART_IRQHandler(UART_HandleTypeDef *);
 int HAL_I2C_IsDeviceReady(I2C_HandleTypeDef *, uint16_t, uint32_t, uint32_t);
 int HAL_I2C_Master_Transmit(I2C_HandleTypeDef *, uint16_t, uint8_t *, uint16_t, uint32_t);

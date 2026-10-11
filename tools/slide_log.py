@@ -61,7 +61,8 @@ while time.time() - t0 < secs:
         continue
     b = at(d, "g_track_bits") & 0x1F
     m = at(d, "g_track_mask") & 0x1F
-    p = u16(d, "g_track_pos")
+    off = A["g_track_pos"] - LO
+    p = int.from_bytes(d[off:off + 2], "little", signed=True)
     p = p if p != 999 else -999
     s = "".join("1" if b & (1 << i) else "0" for i in range(5))
     sm = "".join("1" if m & (1 << i) else "0" for i in range(5))

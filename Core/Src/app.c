@@ -59,9 +59,43 @@ static uint8_t parse_number(const char *s, int32_t *result)
     return 1;
 }
 
+/* ---- async serial transmit: replies only enqueue into a ring buffer that
+   TXE interrupts drain one byte at a time.
+
+   Blocking replies are a line-following hazard: HAL_UART_Transmit waits for
+   the wire, so sixteen queued "0\n" commands answer with ~66 ms of
+   9600-baud transmits during which the 5 ms steering pass and the K4 stop
+   are simply postponed.  The ring is single-producer (main loop) /
+   single-consumer (TX ISR); if it ever fills, bytes are dropped rather
+   than ever blocking. */
+#define TX_SIZE 128u
+static volatile uint8_t tx_buf[TX_SIZE];
+static volatile uint16_t tx_head, tx_tail;
+
+static void tx_kick(void)
+{
+    /* HAL_UART_Transmit_IT serializes callers: when a byte is already in
+       flight it returns HAL_BUSY and this is a no-op. */
+    if (tx_head != tx_tail)
+        (void)HAL_UART_Transmit_IT(&uart, (uint8_t *)&tx_buf[tx_tail], 1u);
+}
+
+void HAL_UART_TxCpltCallback(UART_HandleTypeDef *h)
+{
+    if (h != &uart) return;
+    tx_tail = (uint16_t)((tx_tail + 1u) % TX_SIZE);
+    tx_kick();
+}
+
 static void reply(const char *s)
 {
-    HAL_UART_Transmit(&uart, (uint8_t *)s, (uint16_t)strlen(s), 30);
+    while (*s) {
+        uint16_t next = (uint16_t)((tx_head + 1u) % TX_SIZE);
+        if (next == tx_tail) return;            /* full: drop, never block */
+        tx_buf[tx_head] = (uint8_t)*s++;
+        tx_head = next;
+    }
+    tx_kick();
 }
 
 static uint8_t same_ci(char a, char b)
@@ -338,7 +372,12 @@ void App_Tick(void)
         if (page == 3u && motor_step >= 5u) dirty = 1;
         if (follow_on && page == 3u) {   /* line following control */
             int16_t pos = g_track_pos;
-            if (pos != TRACK_NO_LINE) {
+            /* A held all-high pattern is not a perfect centre: with the
+               input pull-ups a cut sensor harness reads 11111, which would
+               otherwise look like "the whole field is line" and cruise on
+               forever.  Treat it as lost -- a genuine wide black patch
+               still crosses within the 1.5 s grace below. */
+            if (pos != TRACK_NO_LINE && g_track_mask != 0x1Fu) {
                 lost_tick = now;
                 follow_corr = (int16_t)((int32_t)pos * FOLLOW_K / 100);
             }
