@@ -25,8 +25,12 @@ static uint8_t motor_step;
 
 /* Line following: differential steering; the position error shifts speed
    between the two wheels (both stay forward). */
-#define FOLLOW_BASE 80      /* cruise speed, percent (moves fine on 6 V) */
-#define FOLLOW_K    35      /* steering gain: corr = pos * K / 100       */
+#define FOLLOW_BASE 85      /* cruise speed, percent (measured: 85 starts a */
+                            /* cold motor on 6 V + L298N; 80 was marginal) */
+#define FOLLOW_K    35      /* steering gain: corr = pos * K / 100        */
+#define FOLLOW_MIN  75      /* inner-wheel duty floor: at 55 the inner    */
+                            /* wheel stalled instead of turning (6 V +    */
+                            /* L298N needs ~75 % to keep spinning)        */
 static uint8_t follow_on;
 static int16_t follow_corr;
 static uint32_t scan_tick, lost_tick;
@@ -384,9 +388,13 @@ void App_Tick(void)
             if ((uint32_t)(now - lost_tick) <= 1500u) {
                 int16_t l = (int16_t)(FOLLOW_BASE + follow_corr);
                 int16_t r = (int16_t)(FOLLOW_BASE - follow_corr);
-                /* keep the inner wheel above the stall threshold (6 V + L298N) */
-                if (l < 55) l = 55;
-                if (r < 55) r = 55;
+                /* both limits matter on real hardware: a stalled inner
+                   wheel (below ~75 %) turns the correction into driving
+                   straight at the line */
+                if (l < FOLLOW_MIN) l = FOLLOW_MIN;
+                if (r < FOLLOW_MIN) r = FOLLOW_MIN;
+                if (l > 100) l = 100;
+                if (r > 100) r = 100;
                 Motor_Set(l, r);
             } else {
                 Motor_Brake();           /* line lost for 1.5 s: stop safely */

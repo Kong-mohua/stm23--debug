@@ -160,15 +160,17 @@ int main(void) {
     sensors(0x04);
     tick += 10; App_Tick();
     assert(g_track_mask == 0x04 && g_track_pos == 0 &&
-           motor_left == 80 && motor_right == 80);
-    /* line under the left-most probe: inner-wheel stall floor */
+           motor_left == 85 && motor_right == 85);
+    /* line under the left-most probe: inner wheel held at the spin floor,
+       outer wheel capped at full duty */
     sensors(0x01);
     tick += 10; App_Tick();
-    assert(g_track_pos == -100 && motor_left == 55 && motor_right == 115);
-    /* R1 only: gentle right (pos +50 -> corr 17) */
+    assert(g_track_pos == -100 && motor_left == 75 && motor_right == 100);
+    /* R1 only: gentle right (pos +50 -> corr 17); the spin floor clamps
+       the slowed side to 75 on this 6 V + L298N drive */
     sensors(0x08);
     tick += 10; App_Tick();
-    assert(g_track_pos == 50 && motor_left == 97 && motor_right == 63);
+    assert(g_track_pos == 50 && motor_left == 100 && motor_right == 75);
     /* inverted-polarity modules: line = low level */
     g_track_pol = 0u; sensors(0x00);
     tick += 10; App_Tick();
@@ -196,6 +198,17 @@ int main(void) {
     tick += 1660; App_Tick();                       /* line idle >1.5 s: stop */
     assert(motor_brakes > brakes && follow_on == 0);
     assert(OLED_IsReady() && i2c_recovers == rec0); /* panel back after stopping */
+    /* A cut sensor harness reads all-high through the input pull-ups: that
+       must NOT look like a perfect centre.  It holds the last steering for
+       the 1.5 s grace, then stops like any other lost line. */
+    press(KEY2_Pin);                              /* restart following */
+    assert(follow_on == 1);
+    sensors(0x1F);                                /* all five reading 1 */
+    tick += 1000; App_Tick();
+    assert(follow_on == 1 && motor_left == 85 && motor_right == 85);
+    int brakes2 = motor_brakes;
+    tick += 600; App_Tick();                      /* past the 1.5 s grace */
+    assert(motor_brakes > brakes2 && follow_on == 0);
     /* ---- serial: error frames and backlogs must not corrupt value_a ---- */
     transmitted[0] = 0;
     rx_byte = 0x01; HAL_UART_RxCpltCallback(&uart);  /* illegal control byte */
