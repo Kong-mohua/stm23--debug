@@ -171,6 +171,11 @@ int main(void) {
     sensors(0x08);
     tick += 10; App_Tick();
     assert(g_track_pos == 50 && motor_left == 78 && motor_right == 78);
+    /* Crossroad: all five probes black -> straight through at full cruise
+       instead of holding the incoming steering angle */
+    sensors(0x1F);
+    tick += 10; App_Tick();
+    assert(g_track_mask == 0x1F && motor_left == 90 && motor_right == 90);
     /* inverted-polarity modules: line = low level */
     g_track_pol = 0u; sensors(0x00);
     tick += 10; App_Tick();

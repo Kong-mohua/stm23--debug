@@ -420,6 +420,15 @@ void App_Tick(void)
                 follow_last_pos = pos;
                 lost_ticks = 0;
                 lost_tick = now;
+            } else if (g_track_mask == 0x1Fu) {
+                /* Crossroad / wide black patch: all five probes see line.
+                   Go straight through at full cruise instead of holding
+                   whatever steering angle the cart arrived with.  The
+                   lost timer is NOT refreshed here, so a cut harness
+                   (which reads all-high too) still stops after 1.5 s. */
+                follow_corr = 0;
+                follow_err_prev = 0;
+                follow_base = FOLLOW_BASE;
             }
             if ((uint32_t)(now - lost_tick) <= 1500u) {
                 if (pos == TRACK_NO_LINE && g_track_mask == 0u) {
