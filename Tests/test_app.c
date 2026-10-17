@@ -160,7 +160,7 @@ int main(void) {
     sensors(0x04);
     tick += 10; App_Tick();
     assert(g_track_mask == 0x04 && g_track_pos == 0 &&
-           motor_left == 90 && motor_right == 90);
+           motor_left == 85 && motor_right == 85);
     /* left-most probe (-100): ramped gain 22 + D(-7), one EMA step -14,
        curve base 72, inner wheel at the 60 floor */
     sensors(0x01);
@@ -175,7 +175,7 @@ int main(void) {
        instead of holding the incoming steering angle */
     sensors(0x1F);
     tick += 10; App_Tick();
-    assert(g_track_mask == 0x1F && motor_left == 90 && motor_right == 90);
+    assert(g_track_mask == 0x1F && motor_left == 85 && motor_right == 85);
     /* inverted-polarity modules: line = low level */
     g_track_pol = 0u; sensors(0x00);
     tick += 10; App_Tick();
@@ -210,7 +210,7 @@ int main(void) {
     assert(follow_on == 1);
     sensors(0x1F);                                /* all five reading 1 */
     tick += 1000; App_Tick();
-    assert(follow_on == 1 && motor_left == 90 && motor_right == 90);
+    assert(follow_on == 1 && motor_left == 85 && motor_right == 85);
     int brakes2 = motor_brakes;
     tick += 600; App_Tick();                      /* past the 1.5 s grace */
     assert(motor_brakes > brakes2 && follow_on == 0);
@@ -234,7 +234,7 @@ int main(void) {
     tick += 10; App_Tick();
     assert(motor_left == 75 && motor_right == -75);
     tick += 600; App_Tick();
-    assert(motor_left == 90 && motor_right == 90);  /* window over: resume */
+    assert(motor_left == 85 && motor_right == 85);  /* window over: resume */
     press(KEY2_Pin);                              /* follow off again */
     /* ---- serial: error frames and backlogs must not corrupt value_a ---- */
     transmitted[0] = 0;

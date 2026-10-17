@@ -25,7 +25,7 @@ static uint8_t motor_step;
 
 /* Line following: differential steering; the position error shifts speed
    between the two wheels (both stay forward). */
-#define FOLLOW_BASE 90      /* cruise speed, percent: race pace on the straights */
+#define FOLLOW_BASE 85      /* cruise speed, percent: straights */
 #define FOLLOW_K    15      /* steering gain at |pos| <= 50               */
 #define FOLLOW_K_CURVE 22   /* gain ramps 15 -> 22 between |pos| 50..100  */
 #define FOLLOW_KD   30      /* D damping: 30 * delta(pos) / 100           */
