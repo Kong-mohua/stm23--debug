@@ -160,17 +160,17 @@ int main(void) {
     sensors(0x04);
     tick += 10; App_Tick();
     assert(g_track_mask == 0x04 && g_track_pos == 0 &&
-           motor_left == 85 && motor_right == 85);
-    /* line under the left-most probe: inner wheel held at the spin floor,
-       outer wheel capped at full duty */
+           motor_left == 90 && motor_right == 90);
+    /* left-most probe (-100): ramped gain 22 + D(-7), one EMA step -14,
+       curve base 72, inner wheel at the 60 floor */
     sensors(0x01);
     tick += 10; App_Tick();
-    assert(g_track_pos == -100 && motor_left == 75 && motor_right == 100);
-    /* R1 only: gentle right (pos +50 -> corr 17); the spin floor clamps
-       the slowed side to 75 on this 6 V + L298N drive */
+    assert(g_track_pos == -100 && motor_left == 60 && motor_right == 86);
+    /* R1 only (+50): gain 15 + D(+7) -> raw +14, EMA closes to 0,
+       curve base 78 */
     sensors(0x08);
     tick += 10; App_Tick();
-    assert(g_track_pos == 50 && motor_left == 100 && motor_right == 75);
+    assert(g_track_pos == 50 && motor_left == 78 && motor_right == 78);
     /* inverted-polarity modules: line = low level */
     g_track_pol = 0u; sensors(0x00);
     tick += 10; App_Tick();
@@ -205,10 +205,32 @@ int main(void) {
     assert(follow_on == 1);
     sensors(0x1F);                                /* all five reading 1 */
     tick += 1000; App_Tick();
-    assert(follow_on == 1 && motor_left == 85 && motor_right == 85);
+    assert(follow_on == 1 && motor_left == 90 && motor_right == 90);
     int brakes2 = motor_brakes;
     tick += 600; App_Tick();                      /* past the 1.5 s grace */
     assert(motor_brakes > brakes2 && follow_on == 0);
+    /* Right-angle corner: the line leaves the probe row sideways after
+       being seen on one side -- the cart pivots toward that side instead
+       of cruising straight past the corner. */
+    press(KEY2_Pin);                              /* restart following */
+    assert(follow_on == 1);
+    sensors(0x08);                                /* R1: line on the right */
+    tick += 10; App_Tick();
+    assert(g_track_pos == 50);
+    sensors(0x00);                                /* corner: all five white */
+    tick += 10; App_Tick();
+    assert(motor_left == 85 && motor_right == 71); /* one tick: no pivot */
+    for (int i = 0; i < 11; ++i) { tick += 10; App_Tick(); }
+    assert(motor_left == 75 && motor_right == -75); /* 60 ms: pivot */
+    /* The pivot window holds ~450 ms even when the line reappears under
+       a probe mid-swing, so the car clears the corner instead of resuming
+       half-way through the turn. */
+    sensors(0x04);
+    tick += 10; App_Tick();
+    assert(motor_left == 75 && motor_right == -75);
+    tick += 600; App_Tick();
+    assert(motor_left == 90 && motor_right == 90);  /* window over: resume */
+    press(KEY2_Pin);                              /* follow off again */
     /* ---- serial: error frames and backlogs must not corrupt value_a ---- */
     transmitted[0] = 0;
     rx_byte = 0x01; HAL_UART_RxCpltCallback(&uart);  /* illegal control byte */

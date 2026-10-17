@@ -3,10 +3,11 @@
 /* TIM2 on APB1 (8 MHz with HSI): 8 MHz / 800 = 10 kHz PWM */
 #define MOTOR_PERIOD   799u
 
-/* Left-channel balance trim, percent.  The left gearbox spins measurably
-   slower at equal duty (weaker motor and/or more L298N drop on channel A),
-   so scale its command up to keep the car straight.  110 = +10 %. */
-#define LEFT_TRIM      110
+/* Balance trims, percent (100 = no boost).  Fresh L298N + fresh motors
+   installed 2026-10-13: no compensation; retune by map if a straight run
+   drifts (drift RIGHT -> lower LEFT_TRIM or raise RIGHT_TRIM). */
+#define LEFT_TRIM      100
+#define RIGHT_TRIM     100
 
 static TIM_HandleTypeDef htim2;
 
@@ -73,8 +74,9 @@ void Motor_Set(int16_t left, int16_t right)
 
     if (left  < 0) left  = (int16_t)-left;
     if (right < 0) right = (int16_t)-right;
-    /* balance trim before the clamp: 85 -> 93, 100 stays 100 */
-    left = (int16_t)((int32_t)left * LEFT_TRIM / 100);
+    /* balance trims before the clamp: 85 -> 93, 100 stays 100 */
+    left  = (int16_t)((int32_t)left  * LEFT_TRIM  / 100);
+    right = (int16_t)((int32_t)right * RIGHT_TRIM / 100);
     if (left  > 100) left  = 100;
     if (right > 100) right = 100;
 

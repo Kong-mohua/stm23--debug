@@ -25,14 +25,23 @@ static uint8_t motor_step;
 
 /* Line following: differential steering; the position error shifts speed
    between the two wheels (both stay forward). */
-#define FOLLOW_BASE 85      /* cruise speed, percent (measured: 85 starts a */
-                            /* cold motor on 6 V + L298N; 80 was marginal) */
-#define FOLLOW_K    35      /* steering gain: corr = pos * K / 100        */
-#define FOLLOW_MIN  75      /* inner-wheel duty floor: at 55 the inner    */
-                            /* wheel stalled instead of turning (6 V +    */
-                            /* L298N needs ~75 % to keep spinning)        */
+#define FOLLOW_BASE 90      /* cruise speed, percent: race pace on the straights */
+#define FOLLOW_K    15      /* steering gain at |pos| <= 50               */
+#define FOLLOW_K_CURVE 22   /* gain ramps 15 -> 22 between |pos| 50..100  */
+#define FOLLOW_KD   30      /* D damping: 30 * delta(pos) / 100           */
+#define FOLLOW_BASE_CURVE 78  /* cruise in the curve band |pos| >= 50     */
+#define FOLLOW_BASE_SHARP 72  /* cruise next to a right angle |pos| >= 75 */
+#define FOLLOW_MIN  60      /* inner-wheel duty floor (fresh motors +     */
+                            /* L298N can spin slower than the old pair;   */
+                            /* raise to 65/70 if a wheel stalls in turns) */
 static uint8_t follow_on;
 static int16_t follow_corr;
+static int16_t follow_last_pos;   /* last valid pos: corner pivot side */
+static uint8_t lost_ticks;        /* consecutive all-white scan ticks */
+static uint32_t pivot_until;      /* ms timestamp: forced corner pivot window */
+static int8_t pivot_dir;          /* latched pivot direction (-1 left, +1 right) */
+static int16_t follow_err_prev;   /* previous pos for the D term */
+static int16_t follow_base;       /* speed scheduled by |pos| */
 static uint32_t scan_tick, lost_tick;
 
 static void set_leds(uint8_t one, uint8_t two)
@@ -304,6 +313,12 @@ void App_Init(void)
     value_a = 0;
     follow_on = 0;
     follow_corr = 0;
+    follow_last_pos = 0;
+    follow_err_prev = 0;
+    follow_base = FOLLOW_BASE;
+    lost_ticks = 0;
+    pivot_until = 0;
+    pivot_dir = 0;
     motor_step = 5u;                /* page 3 idles until K1 / K2 */
     set_leds(0, 0);
     Motor_Init();   /* driver standby: wheels stay off until the self test runs */
@@ -355,7 +370,7 @@ void App_Tick(void)
         } else if (keys & 2u) {          /* K2: start / stop line following */
             motor_step = 5u;             /* abort the self test if it runs */
             follow_on = !follow_on;
-            if (follow_on) { lost_tick = now; follow_corr = 0; }
+            if (follow_on) { lost_tick = now; follow_corr = 0; follow_last_pos = 0; follow_err_prev = 0; follow_base = FOLLOW_BASE; lost_ticks = 0; pivot_until = 0; pivot_dir = 0; }
             else Motor_Brake();
             dirty = 1;
         }
@@ -382,20 +397,66 @@ void App_Tick(void)
                forever.  Treat it as lost -- a genuine wide black patch
                still crosses within the 1.5 s grace below. */
             if (pos != TRACK_NO_LINE && g_track_mask != 0x1Fu) {
+                int16_t a = (pos < 0) ? (int16_t)-pos : pos;
+                int16_t k = FOLLOW_K;
+                if (a > 50) {
+                    /* ramp the gain smoothly: a hard step at a threshold
+                       made the cart snap violently on some corners */
+                    k = (int16_t)(FOLLOW_K +
+                                  (FOLLOW_K_CURVE - FOLLOW_K) * (a - 50) / 50);
+                }
+                int16_t der = (int16_t)(pos - follow_err_prev);
+                if (der > 25) der = 25;      /* 5-sensor quanta are 25..50 */
+                if (der < -25) der = -25;    /* wide: clamp so a jump cannot */
+                follow_err_prev = pos;       /* kick the steering sideways  */
+                int16_t corr_raw = (int16_t)((int32_t)pos * k / 100 +
+                                             (int32_t)der * FOLLOW_KD / 100);
+                /* low-pass the correction (half-step EMA): the cart is
+                   otherwise chasing discrete 5-sensor jumps and snakes */
+                follow_corr = (int16_t)(follow_corr + (corr_raw - follow_corr) / 2);
+                /* speed schedule: fast straights, calm corners */
+                follow_base = (a >= 75) ? FOLLOW_BASE_SHARP
+                            : (a >= 50) ? FOLLOW_BASE_CURVE : FOLLOW_BASE;
+                follow_last_pos = pos;
+                lost_ticks = 0;
                 lost_tick = now;
-                follow_corr = (int16_t)((int32_t)pos * FOLLOW_K / 100);
             }
             if ((uint32_t)(now - lost_tick) <= 1500u) {
-                int16_t l = (int16_t)(FOLLOW_BASE + follow_corr);
-                int16_t r = (int16_t)(FOLLOW_BASE - follow_corr);
-                /* both limits matter on real hardware: a stalled inner
-                   wheel (below ~75 %) turns the correction into driving
-                   straight at the line */
-                if (l < FOLLOW_MIN) l = FOLLOW_MIN;
-                if (r < FOLLOW_MIN) r = FOLLOW_MIN;
-                if (l > 100) l = 100;
-                if (r > 100) r = 100;
-                Motor_Set(l, r);
+                if (pos == TRACK_NO_LINE && g_track_mask == 0u) {
+                    if (lost_ticks < 255u) lost_ticks++;
+                } else {
+                    lost_ticks = 0;
+                }
+                if (pos == TRACK_NO_LINE && g_track_mask == 0u &&
+                    follow_last_pos != 0 && lost_ticks >= 12u &&
+                    (int32_t)(pivot_until - now) <= 0) {
+                    /* start a forced pivot window: even when the line
+                       re-enters under an outer probe mid-swing, keep
+                       rotating a little longer to clear the corner */
+                    pivot_until = now + 450u;
+                    pivot_dir = (follow_last_pos < 0) ? (int8_t)-1 : (int8_t)1;
+                }
+                if ((int32_t)(pivot_until - now) > 0) {
+                    /* Right-angle corner: the line leaves the probe row
+                       sideways and all five go white.  Pivot in place
+                       toward the side it was last seen (K1 turn duty)
+                       so the front swings back onto it; the direction is
+                       latched so a probe that re-sees the line mid-swing
+                       cannot flip it. */
+                    if (pivot_dir < 0) Motor_Set(-75, 75);
+                    else               Motor_Set(75, -75);
+                } else {
+                    int16_t l = (int16_t)(follow_base + follow_corr);
+                    int16_t r = (int16_t)(follow_base - follow_corr);
+                    /* both limits matter on real hardware: a stalled inner
+                       wheel (below ~75 %) turns the correction into driving
+                       straight at the line */
+                    if (l < FOLLOW_MIN) l = FOLLOW_MIN;
+                    if (r < FOLLOW_MIN) r = FOLLOW_MIN;
+                    if (l > 100) l = 100;
+                    if (r > 100) r = 100;
+                    Motor_Set(l, r);
+                }
             } else {
                 Motor_Brake();           /* line lost for 1.5 s: stop safely */
                 follow_on = 0;
